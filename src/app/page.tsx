@@ -2,91 +2,106 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 
+// Definimos qué datos tiene un jugador
+interface Jugador {
+  id: string;
+  nombre: string;
+  posicion: string;
+  valor: number;
+  puntos_media: number;
+}
+
 export default function Dashboard() {
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [jugadores, setJugadores] = useState<Jugador[]>([]);
+  const [cargando, setCargando] = useState(true);
 
   useEffect(() => {
-    const checkUser = async () => {
+    const getData = async () => {
+      // 1. Obtener usuario
       const { data: { user } } = await supabase.auth.getUser();
-      if (user) setUserEmail(user.email || null);
-      else window.location.href = '/login';
+      if (user) {
+        setUserEmail(user.email || null);
+        
+        // 2. Obtener sus jugadores de la tabla que creamos
+        const { data, error } = await supabase
+          .from('jugadores')
+          .select('*')
+          .order('valor', { ascending: false });
+
+        if (!error && data) setJugadores(data);
+      } else {
+        window.location.href = '/login';
+      }
+      setCargando(false);
     };
-    checkUser();
+    getData();
   }, []);
 
   return (
-    <div className="flex flex-col md:flex-row min-h-screen bg-slate-950 text-white font-sans pb-20 md:pb-0">
+    <div className="flex flex-col md:flex-row min-h-screen bg-slate-950 text-white font-sans pb-24 md:pb-0">
       
-      {/* 1. BARRA LATERAL (Solo se ve en PC/Tablet) */}
+      {/* SIDEBAR (Desktop) */}
       <aside className="hidden md:flex w-72 bg-slate-900 border-r border-slate-800 p-8 flex-col">
         <h1 className="text-3xl font-black text-orange-500 italic tracking-tighter mb-10">TD MANAGER</h1>
         <nav className="flex-1 space-y-3 font-bold">
-          <div className="p-4 bg-orange-600/10 text-orange-500 rounded-2xl border border-orange-500/20 cursor-pointer">🏠 INICIO</div>
-          <div className="p-4 text-slate-500 hover:bg-slate-800 rounded-2xl cursor-pointer transition-all">🏀 MI PLANTILLA</div>
-          <div className="p-4 text-slate-500 hover:bg-slate-800 rounded-2xl cursor-pointer transition-all">📊 LIGA</div>
+          <div className="p-4 bg-orange-600/10 text-orange-500 rounded-2xl border border-orange-500/20">🏠 INICIO</div>
+          <div className="p-4 text-slate-500 hover:bg-slate-800 rounded-2xl cursor-not-allowed transition-all">🏀 MI PLANTILLA</div>
         </nav>
-        <button 
-          onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
-          className="mt-auto p-4 text-slate-600 hover:text-red-400 text-sm font-bold transition-colors underline"
-        >
-          Cerrar Sesión
-        </button>
+        <button onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')} className="mt-auto text-slate-600 hover:text-red-400 text-sm font-bold underline">Cerrar Sesión</button>
       </aside>
 
-      {/* 2. CONTENIDO PRINCIPAL (Se adapta a todo) */}
+      {/* CONTENIDO PRINCIPAL */}
       <main className="flex-1 p-6 md:p-12 overflow-y-auto">
-        <header className="flex flex-col md:flex-row justify-between items-start md:items-center mb-8 md:mb-12 gap-4">
-          <div>
-            <h2 className="text-3xl md:text-5xl font-black uppercase tracking-tight leading-none">PANEL DE CONTROL</h2>
-            <p className="text-slate-400 text-sm mt-2 italic">{userEmail || 'Conectando...'}</p>
-          </div>
-          {/* Botón de logout oculto en móvil (se usa el de abajo) */}
-          <button 
-            onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
-            className="hidden md:block text-xs font-black text-slate-600 hover:text-orange-500 transition-colors"
-          >
-            LOGOUT
-          </button>
+        <header className="mb-10">
+          <h2 className="text-4xl md:text-5xl font-black uppercase tracking-tight">MI EQUIPO</h2>
+          <p className="text-slate-400 text-sm mt-2 italic">{userEmail || 'Cargando...'}</p>
         </header>
 
-        {/* Tarjetas de Datos */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <div className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl relative overflow-hidden group">
-            <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/5 rounded-full -mr-16 -mt-16 group-hover:bg-orange-500/10 transition-all"></div>
-            <h3 className="text-orange-500 text-[10px] font-black uppercase tracking-[0.2em] mb-4">Estado de Franquicia</h3>
-            <p className="text-xl md:text-2xl font-bold italic leading-tight">Tu equipo está listo para el Draft de 2026.</p>
+        {/* LISTA DE JUGADORES */}
+        <section>
+          <div className="flex justify-between items-center mb-6">
+            <h3 className="text-orange-500 text-xs font-black uppercase tracking-[0.2em]">Quinteto Inicial</h3>
+            <span className="text-[10px] bg-slate-800 px-3 py-1 rounded-full text-slate-400 font-bold">{jugadores.length} / 5</span>
           </div>
 
-          <div className="bg-slate-900 p-8 rounded-[2.5rem] border border-slate-800 shadow-2xl">
-            <h3 className="text-blue-500 text-[10px] font-black uppercase tracking-[0.2em] mb-4">Presupuesto Inicial</h3>
-            <p className="text-3xl md:text-4xl font-mono font-black text-green-400">500.000 €</p>
+          <div className="space-y-4">
+            {cargando ? (
+              <p className="text-slate-500 animate-pulse">Buscando jugadores en el vestuario...</p>
+            ) : jugadores.length > 0 ? (
+              jugadores.map((jugador) => (
+                <div key={jugador.id} className="flex items-center justify-between bg-slate-900 p-5 rounded-[2rem] border border-slate-800 hover:border-orange-500/50 transition-all group">
+                  <div className="flex items-center gap-4">
+                    <div className="w-12 h-12 bg-gradient-to-br from-slate-800 to-slate-700 rounded-full flex items-center justify-center font-black text-slate-400 group-hover:text-orange-500 transition-colors">
+                      {jugador.posicion.substring(0, 2).toUpperCase()}
+                    </div>
+                    <div>
+                      <p className="font-black text-lg leading-none">{jugador.nombre}</p>
+                      <p className="text-[10px] text-slate-500 uppercase font-bold mt-1 tracking-wider">{jugador.posicion}</p>
+                    </div>
+                  </div>
+                  <div className="text-right">
+                    <p className="text-green-400 font-mono font-bold">{jugador.valor.toLocaleString()} €</p>
+                    <p className="text-[10px] text-slate-500 font-black italic">{jugador.puntos_media} PTS</p>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <div className="p-10 border-2 border-dashed border-slate-800 rounded-[2.5rem] text-center text-slate-600 font-bold italic">
+                No tienes jugadores. Ve al SQL Editor de Supabase para crearlos.
+              </div>
+            )}
           </div>
-        </div>
+        </section>
       </main>
 
-      {/* 3. NAVEGACIÓN INFERIOR (Solo se ve en MÓVIL) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900/80 backdrop-blur-xl border-t border-slate-800 px-6 py-4 flex justify-between items-center z-50">
-        <div className="flex flex-col items-center gap-1 text-orange-500">
-          <span className="text-xl">🏠</span>
-          <span className="text-[10px] font-black uppercase">Inicio</span>
-        </div>
-        <div className="flex flex-col items-center gap-1 text-slate-500 opacity-50">
-          <span className="text-xl">🏀</span>
-          <span className="text-[10px] font-black uppercase">Equipo</span>
-        </div>
-        <div className="flex flex-col items-center gap-1 text-slate-500 opacity-50">
-          <span className="text-xl">📊</span>
-          <span className="text-[10px] font-black uppercase">Liga</span>
-        </div>
-        <button 
-          onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')}
-          className="flex flex-col items-center gap-1 text-slate-500"
-        >
-          <span className="text-xl">🚪</span>
-          <span className="text-[10px] font-black uppercase">Salir</span>
-        </button>
+      {/* NAV INFERIOR (Móvil) */}
+      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-slate-900/90 backdrop-blur-xl border-t border-slate-800 px-8 py-5 flex justify-between items-center z-50">
+        <div className="text-orange-500 flex flex-col items-center gap-1"><span className="text-xl">🏠</span><span className="text-[8px] font-black uppercase">Inicio</span></div>
+        <div className="text-slate-500 flex flex-col items-center gap-1 opacity-50"><span className="text-xl">🏀</span><span className="text-[8px] font-black uppercase">Equipo</span></div>
+        <div className="text-slate-500 flex flex-col items-center gap-1 opacity-50"><span className="text-xl">📊</span><span className="text-[8px] font-black uppercase">Liga</span></div>
+        <button onClick={() => supabase.auth.signOut().then(() => window.location.href = '/login')} className="text-slate-500 flex flex-col items-center gap-1"><span className="text-xl">🚪</span><span className="text-[8px] font-black uppercase">Salir</span></button>
       </nav>
-
     </div>
   );
 }
