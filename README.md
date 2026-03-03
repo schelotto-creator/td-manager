@@ -34,3 +34,37 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## Automatización de temporada
+
+El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que ejecuta:
+
+- Simulación automática de partidos con `played = false` y `match_date <= now`.
+- Mantenimiento semanal (finanzas + forma + reset de entrenos) mediante la RPC `run_weekly_maintenance`.
+
+### Variables de entorno requeridas
+
+- `NEXT_PUBLIC_SUPABASE_URL` (o `SUPABASE_URL`)
+- `SUPABASE_SERVICE_ROLE_KEY`
+- `CRON_SECRET` (recomendado en producción)
+
+### Cron en Vercel
+
+Se configura en `vercel.json` para ejecutarse cada minuto:
+
+- `path`: `/api/cron/season-tick`
+- `schedule`: `* * * * *`
+
+Vercel enviará `Authorization: Bearer <CRON_SECRET>` si defines `CRON_SECRET` en el proyecto.
+
+### SQL necesario
+
+Aplica las migraciones de `db/migrations`, en especial:
+
+- `20260302_automation_scheduler.sql`
+
+Esa migración añade:
+
+- `match_date` en `matches` (con trigger/autocálculo por jornada).
+- `automation_runs` para idempotencia.
+- Función `run_weekly_maintenance(boolean)` para el cierre semanal.
