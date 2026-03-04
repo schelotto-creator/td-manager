@@ -20,6 +20,13 @@ type TeamRow = {
   d?: number;
   pts?: number;
 };
+type PlayedMatchRow = {
+  home_team_id: TeamId;
+  away_team_id: TeamId;
+  home_score: number;
+  away_score: number;
+  played: boolean;
+};
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
   if (typeof error === 'string') return error;
@@ -146,6 +153,18 @@ export default function LeaguesExplorer() {
     void loadStandings(selectedGroupId);
   }, [selectedGroupId]);
 
+  const sortStandings = useCallback((teams: TeamRow[]) => {
+    return [...teams].sort((a, b) => {
+      const ptsDiff = Number(b.pts || 0) - Number(a.pts || 0);
+      if (ptsDiff !== 0) return ptsDiff;
+      const winsDiff = Number(b.v || 0) - Number(a.v || 0);
+      if (winsDiff !== 0) return winsDiff;
+      const lossesDiff = Number(a.d || 0) - Number(b.d || 0);
+      if (lossesDiff !== 0) return lossesDiff;
+      return String(a.nombre || '').localeCompare(String(b.nombre || ''));
+    });
+  }, []);
+
   const loadStandings = async (grupoId: number) => {
     setLoadError(null);
     const { data: teams, error } = await supabase
@@ -161,15 +180,83 @@ export default function LeaguesExplorer() {
       return;
     }
 
-    const ordered = ((teams || []) as TeamRow[]).sort((a, b) => {
-      const ptsDiff = Number(b.pts || 0) - Number(a.pts || 0);
-      if (ptsDiff !== 0) return ptsDiff;
-      const winsDiff = Number(b.v || 0) - Number(a.v || 0);
-      if (winsDiff !== 0) return winsDiff;
-      return Number(a.d || 0) - Number(b.d || 0);
+    const baseTeams = (teams || []) as TeamRow[];
+    if (baseTeams.length === 0) {
+      setStandings([]);
+      return;
+    }
+
+    const teamIds = baseTeams.map((team) => String(team.id));
+    const teamIdSet = new Set(teamIds);
+    const emptyStatsByTeam = new Map<string, { pj: number; v: number; d: number; pts: number }>(
+      teamIds.map((id) => [id, { pj: 0, v: 0, d: 0, pts: 0 }])
+    );
+
+    const { data: playedMatches, error: matchesError } = await supabase
+      .from('matches')
+      .select('home_team_id,away_team_id,home_score,away_score,played')
+      .in('home_team_id', teamIds)
+      .in('away_team_id', teamIds)
+      .eq('played', true);
+
+    if (matchesError) {
+      console.warn('No se pudieron calcular standings desde matches. Se usa fallback.', matchesError);
+      setLoadError(`No se pudieron recalcular standings (${toErrorText(matchesError).slice(0, 160)}).`);
+      setStandings(sortStandings(baseTeams));
+      return;
+    }
+
+    ((playedMatches || []) as PlayedMatchRow[]).forEach((match) => {
+      const homeId = String(match.home_team_id);
+      const awayId = String(match.away_team_id);
+      if (!teamIdSet.has(homeId) || !teamIdSet.has(awayId)) return;
+
+      const home = emptyStatsByTeam.get(homeId);
+      const away = emptyStatsByTeam.get(awayId);
+      if (!home || !away) return;
+
+      home.pj += 1;
+      away.pj += 1;
+
+      const homeScore = Number(match.home_score || 0);
+      const awayScore = Number(match.away_score || 0);
+
+      if (homeScore > awayScore) {
+        home.v += 1;
+        home.pts += 2;
+        away.d += 1;
+        away.pts += 1;
+        return;
+      }
+
+      if (awayScore > homeScore) {
+        away.v += 1;
+        away.pts += 2;
+        home.d += 1;
+        home.pts += 1;
+        return;
+      }
+
+      // Empate improbable en baloncesto: lo tratamos como derrota para ambos.
+      home.d += 1;
+      away.d += 1;
+      home.pts += 1;
+      away.pts += 1;
     });
 
-    setStandings(ordered);
+    const derived = baseTeams.map((team) => {
+      const computed = emptyStatsByTeam.get(String(team.id));
+      if (!computed) return team;
+      return {
+        ...team,
+        pj: computed.pj,
+        v: computed.v,
+        d: computed.d,
+        pts: computed.pts
+      };
+    });
+
+    setStandings(sortStandings(derived));
   };
 
   const isShowingDefault = selectedGroupId === myGroupId;

@@ -129,6 +129,30 @@ const buildAssignedQuartersMap = (tactics?: EngineTactics) => {
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
+const toReplayLogFromEvent = (ev: MatchEvent): ReplayLog => ({
+  time: ev.time || '00:00',
+  quarter: ev.quarter || 'Q1',
+  text: ev.text || 'Acción sin descripción',
+  type: ev.type || 'info',
+  isHomeAction: typeof ev.isHomeAction === 'boolean' ? ev.isHomeAction : true,
+  teamColor: ev.teamColor || '#3b82f6'
+});
+
+const buildLogsFromEvents = (events: MatchEvent[]) => events.map(toReplayLogFromEvent).reverse();
+
+const buildPartialsFromEvents = (events: MatchEvent[]) => {
+  const partials = [...DEFAULT_PARTIALS];
+  events.forEach((ev) => {
+    const qIndex = Number((ev.quarter || 'Q1').replace(/\D/g, '')) - 1;
+    if (Number.isNaN(qIndex) || qIndex < 0 || qIndex >= 4) return;
+    partials[qIndex] = {
+      home: Number(ev.home_q || 0),
+      away: Number(ev.away_q || 0)
+    };
+  });
+  return partials;
+};
+
 type TeamSide = 'home' | 'away';
 
 type PlayerGameStat = {
@@ -288,12 +312,31 @@ const buildPlayerGameStatsFromEvents = (
   );
 };
 
+const pickLeaderForMetric = (
+  rows: PlayerGameStat[],
+  metric: 'points' | 'rebounds' | 'assists' | 'efficiency'
+) => {
+  const sorted = [...rows].sort((a, b) => {
+    const metricDiff = Number(b[metric] || 0) - Number(a[metric] || 0);
+    if (metricDiff !== 0) return metricDiff;
+    const efficiencyDiff = Number(b.efficiency || 0) - Number(a.efficiency || 0);
+    if (efficiencyDiff !== 0) return efficiencyDiff;
+    const pointsDiff = Number(b.points || 0) - Number(a.points || 0);
+    if (pointsDiff !== 0) return pointsDiff;
+    return Number(a.player_id) - Number(b.player_id);
+  });
+
+  const top = sorted[0];
+  if (!top || Number(top[metric] || 0) <= 0) return null;
+  return top;
+};
+
 const buildPayloadFromTemplate = (
   rows: PlayerGameStat[],
   template: {
     match: string;
     player: string;
-    team: string;
+    team?: string;
     points: string;
     rebounds: string;
     assists: string;
@@ -306,11 +349,11 @@ const buildPayloadFromTemplate = (
     const payload: Record<string, unknown> = {
       [template.match]: matchId,
       [template.player]: row.player_id,
-      [template.team]: row.team_id,
       [template.points]: row.points,
       [template.rebounds]: row.rebounds,
       [template.assists]: row.assists
     };
+    if (template.team) payload[template.team] = row.team_id;
     if (template.turnovers) payload[template.turnovers] = row.turnovers;
     if (template.efficiency) payload[template.efficiency] = row.efficiency;
     return payload;
@@ -320,6 +363,13 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
   if (rows.length === 0) return { ok: true as const };
 
   const templates = [
+    {
+      match: 'match_id',
+      player: 'player_id',
+      points: 'points',
+      rebounds: 'rebounds',
+      assists: 'assists'
+    },
     {
       match: 'match_id',
       player: 'player_id',
@@ -572,6 +622,68 @@ function MatchEnginePageContent() {
   const finalPartialsRef = useRef([...DEFAULT_PARTIALS]);
   const homeAssignedQuartersMap = useMemo(() => buildAssignedQuartersMap(homeTactics), [homeTactics]);
   const awayAssignedQuartersMap = useMemo(() => buildAssignedQuartersMap(awayTactics), [awayTactics]);
+  const playersById = useMemo(() => {
+    const map = new Map<number, EnginePlayer>();
+    [...homeRoster, ...awayRoster].forEach((player) => map.set(player.id, player));
+    return map;
+  }, [homeRoster, awayRoster]);
+  const teamMetaById = useMemo(() => {
+    const map = new Map<TeamId, { name: string; color: string }>();
+    if (homeTeam) map.set(homeTeam.id, { name: homeTeam.nombre, color: homeTeam.color_primario || '#06b6d4' });
+    if (awayTeam) map.set(awayTeam.id, { name: awayTeam.nombre, color: awayTeam.color_primario || '#ef4444' });
+    return map;
+  }, [homeTeam, awayTeam]);
+  const eventsForLeaderBoard = useMemo(() => {
+    if (matchEvents.length === 0) return [] as MatchEvent[];
+    if (currentEventIndex <= 0) return currentMatch?.played ? matchEvents : [];
+    return matchEvents.slice(0, Math.min(currentEventIndex, matchEvents.length));
+  }, [matchEvents, currentEventIndex, currentMatch?.played]);
+  const playerStatsForLeaderBoard = useMemo(() => {
+    if (!currentMatch || eventsForLeaderBoard.length === 0 || homeRoster.length === 0 || awayRoster.length === 0) {
+      return [] as PlayerGameStat[];
+    }
+    return buildPlayerGameStatsFromEvents(
+      eventsForLeaderBoard,
+      homeRoster,
+      awayRoster,
+      currentMatch.home_team_id,
+      currentMatch.away_team_id
+    );
+  }, [eventsForLeaderBoard, homeRoster, awayRoster, currentMatch]);
+  const matchLeaders = useMemo(() => {
+    const definitions = [
+      { key: 'points', label: 'Anotación', suffix: 'PTS' },
+      { key: 'rebounds', label: 'Rebotes', suffix: 'REB' },
+      { key: 'assists', label: 'Asistencias', suffix: 'AST' },
+      { key: 'efficiency', label: 'Valoración', suffix: 'VAL' }
+    ] as const;
+
+    return definitions.map((def) => {
+      const leader = pickLeaderForMetric(playerStatsForLeaderBoard, def.key);
+      if (!leader) {
+        return {
+          label: def.label,
+          suffix: def.suffix,
+          value: 0,
+          name: 'Sin datos',
+          teamName: '-',
+          teamColor: '#475569'
+        };
+      }
+
+      const player = playersById.get(leader.player_id);
+      const teamMeta = teamMetaById.get(leader.team_id);
+
+      return {
+        label: def.label,
+        suffix: def.suffix,
+        value: Number(leader[def.key] || 0),
+        name: player?.name || `#${leader.player_id}`,
+        teamName: teamMeta?.name || String(leader.team_id),
+        teamColor: teamMeta?.color || '#475569'
+      };
+    });
+  }, [playerStatsForLeaderBoard, playersById, teamMetaById]);
 
   const userInCurrentMatch = useMemo(() => {
     if (!currentMatch || !myClubId) return false;
@@ -710,6 +822,8 @@ function MatchEnginePageContent() {
         const replayEvents = toReplayEvents(matchData.play_by_play);
         if (replayEvents.length > 0) {
           setMatchEvents(replayEvents);
+          const replayPartials = buildPartialsFromEvents(replayEvents);
+          finalPartialsRef.current = replayPartials;
           const first = replayEvents[0];
           if (first.homeLineup.length > 0) setDisplayedHomeLineup(first.homeLineup);
           if (first.awayLineup.length > 0) setDisplayedAwayLineup(first.awayLineup);
@@ -986,9 +1100,12 @@ function MatchEnginePageContent() {
     setDisplayedAwayScore(last.away_score);
     setDisplayedQuarter(last.quarter || 'Q4');
     setDisplayedTime(last.time || '00:00');
-    setDisplayedPartials(finalPartialsRef.current);
+    const resolvedPartials = buildPartialsFromEvents(matchEvents);
+    finalPartialsRef.current = resolvedPartials;
+    setDisplayedPartials(resolvedPartials);
     if (last.homeLineup?.length) setDisplayedHomeLineup(last.homeLineup);
     if (last.awayLineup?.length) setDisplayedAwayLineup(last.awayLineup);
+    setLogs(buildLogsFromEvents(matchEvents));
     setCurrentEventIndex(matchEvents.length);
     setIsFinished(true);
   };
@@ -1216,6 +1333,26 @@ function MatchEnginePageContent() {
               <span className="font-bold truncate">{awayTeam?.nombre || 'Visitante'}</span>
               {quarterTotals.map((q, idx) => <span key={`a-${idx}`} className="text-center font-mono">{q.away}</span>)}
               <span className="text-center font-mono text-cyan-400 font-black">{displayedAwayScore}</span>
+            </div>
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-white/10">
+            <h3 className="text-xs uppercase tracking-widest text-cyan-400 font-black mb-3">Líderes</h3>
+            <div className="space-y-2">
+              {matchLeaders.map((leader) => (
+                <div key={leader.label} className="rounded-xl border border-white/5 bg-slate-950/70 px-3 py-2">
+                  <div className="flex items-center justify-between text-[10px] uppercase tracking-widest text-slate-500 font-black">
+                    <span>{leader.label}</span>
+                    <span className="font-mono text-cyan-300">{leader.value} {leader.suffix}</span>
+                  </div>
+                  <div className="text-sm font-bold mt-1 truncate" style={{ color: leader.teamColor }}>
+                    {leader.name}
+                  </div>
+                  <div className="text-[10px] uppercase tracking-wide text-slate-500 truncate">
+                    {leader.teamName}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         </div>

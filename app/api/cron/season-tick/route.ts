@@ -27,6 +27,10 @@ const isMissingRpc = (error: unknown, functionName: string) => {
 };
 
 const parseBooleanFlag = (value: string | null) => value === '1' || value === 'true' || value === 'yes';
+const parsePositiveInt = (value: string | null) => {
+  const num = Number(value);
+  return Number.isInteger(num) && num > 0 ? num : null;
+};
 
 const isAuthorized = (request: NextRequest) => {
   const secret = process.env.CRON_SECRET || process.env.SCHEDULER_SECRET;
@@ -45,7 +49,12 @@ const runTick = async (request: NextRequest) => {
 
   const now = new Date();
   const forceWeekly = parseBooleanFlag(request.nextUrl.searchParams.get('forceWeekly'));
-  const maxMatches = Math.max(1, Math.min(300, Number(request.nextUrl.searchParams.get('maxMatches') || 40)));
+  const envMaxMatches =
+    parsePositiveInt(process.env.CRON_MAX_MATCHES || null) ||
+    parsePositiveInt(process.env.SCHEDULER_MAX_MATCHES || null) ||
+    220;
+  const requestedMaxMatches = parsePositiveInt(request.nextUrl.searchParams.get('maxMatches'));
+  const maxMatches = Math.max(1, Math.min(300, requestedMaxMatches || envMaxMatches));
   const supabaseAdmin = getSupabaseAdmin();
 
   let weeklyMaintenance: unknown = { status: 'not_executed' };

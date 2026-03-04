@@ -235,8 +235,20 @@ function TacticsBoardContent() {
   const handleDropOnCourt = (targetPos: string) => {
     if (draggingPlayerId === null || !team) return;
     const newRotation = { ...currentRotation };
-    
-    Object.keys(newRotation).forEach(pos => { if (newRotation[pos] === draggingPlayerId) newRotation[pos] = null; });
+
+    const sourcePos =
+      Object.keys(newRotation).find((pos) => newRotation[pos] === draggingPlayerId) || null;
+    const targetPlayerId = newRotation[targetPos];
+
+    if (sourcePos === targetPos) {
+      setDraggingPlayerId(null);
+      return;
+    }
+
+    if (sourcePos) {
+      newRotation[sourcePos] =
+        targetPlayerId !== null && targetPlayerId !== draggingPlayerId ? targetPlayerId : null;
+    }
     newRotation[targetPos] = draggingPlayerId;
     
     setCurrentRotation(newRotation);

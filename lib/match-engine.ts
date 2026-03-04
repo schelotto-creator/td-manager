@@ -466,14 +466,22 @@ export const generateMatchSimulation = ({
       const defenderRole = normalizePosition(defender.position);
       const attackerRating = calculateRoleRating(attacker, attackerRole, ratingConfig);
       const defenderRating = calculateRoleRating(defender, defenderRole, ratingConfig);
+      const averageDuelRating = (attackerRating + defenderRating) / 2;
+      const averageDuelShotImpact = (averageDuelRating - 60) * cfg.shotAverageQualityImpact;
+      const averageDuelTurnoverImpact = (60 - averageDuelRating) * cfg.turnoverAverageQualityImpact;
       const energyShotImpact = (attackerEnergy - 70) * cfg.shotAttackerEnergyImpact;
       const defenseShotImpact = (defenderEnergy - 70) * cfg.shotDefenderEnergyImpact;
       const skillImpact = (attackerRating - defenderRating) * cfg.shotSkillImpact;
-      const shotChance = clamp(baseChance + energyShotImpact - defenseShotImpact + skillImpact, cfg.shotChanceMin, cfg.shotChanceMax);
+      const shotChance = clamp(
+        baseChance + energyShotImpact - defenseShotImpact + skillImpact + averageDuelShotImpact,
+        cfg.shotChanceMin,
+        cfg.shotChanceMax
+      );
       const turnoverChance = clamp(
         cfg.turnoverBaseChance +
           Math.max(0, 60 - attackerEnergy) * cfg.turnoverLowEnergyImpact +
-          Math.max(0, defenderEnergy - 65) * cfg.turnoverDefenseEnergyImpact,
+          Math.max(0, defenderEnergy - 65) * cfg.turnoverDefenseEnergyImpact +
+          averageDuelTurnoverImpact,
         cfg.turnoverChanceMin,
         cfg.turnoverChanceMax
       );

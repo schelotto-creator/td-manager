@@ -12,11 +12,13 @@ export type MatchSimulatorSettings = {
   shotAttackerEnergyImpact: number;
   shotDefenderEnergyImpact: number;
   shotSkillImpact: number;
+  shotAverageQualityImpact: number;
   shotChanceMin: number;
   shotChanceMax: number;
   turnoverBaseChance: number;
   turnoverLowEnergyImpact: number;
   turnoverDefenseEnergyImpact: number;
+  turnoverAverageQualityImpact: number;
   turnoverChanceMin: number;
   turnoverChanceMax: number;
   onCourtQuarterRecovery: number;
@@ -65,11 +67,13 @@ export const DEFAULT_MATCH_SIMULATOR_SETTINGS: MatchSimulatorSettings = {
   shotAttackerEnergyImpact: 0.35,
   shotDefenderEnergyImpact: 0.15,
   shotSkillImpact: 0.16,
+  shotAverageQualityImpact: 0.12,
   shotChanceMin: 16,
   shotChanceMax: 72,
   turnoverBaseChance: 7,
   turnoverLowEnergyImpact: 0.22,
   turnoverDefenseEnergyImpact: 0.06,
+  turnoverAverageQualityImpact: 0.08,
   turnoverChanceMin: 6,
   turnoverChanceMax: 26,
   onCourtQuarterRecovery: 10,
@@ -100,11 +104,13 @@ export const normalizeMatchSimulatorSettings = (
     shotAttackerEnergyImpact: toFloat(input.shotAttackerEnergyImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotAttackerEnergyImpact, -2, 2),
     shotDefenderEnergyImpact: toFloat(input.shotDefenderEnergyImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotDefenderEnergyImpact, -2, 2),
     shotSkillImpact: toFloat(input.shotSkillImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotSkillImpact, -2, 2),
+    shotAverageQualityImpact: toFloat(input.shotAverageQualityImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotAverageQualityImpact, 0, 2),
     shotChanceMin: toFloat(input.shotChanceMin, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotChanceMin, 1, 95),
     shotChanceMax: toFloat(input.shotChanceMax, DEFAULT_MATCH_SIMULATOR_SETTINGS.shotChanceMax, 5, 99),
     turnoverBaseChance: toFloat(input.turnoverBaseChance, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverBaseChance, 0, 60),
     turnoverLowEnergyImpact: toFloat(input.turnoverLowEnergyImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverLowEnergyImpact, 0, 5),
     turnoverDefenseEnergyImpact: toFloat(input.turnoverDefenseEnergyImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverDefenseEnergyImpact, 0, 5),
+    turnoverAverageQualityImpact: toFloat(input.turnoverAverageQualityImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverAverageQualityImpact, 0, 2),
     turnoverChanceMin: toFloat(input.turnoverChanceMin, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverChanceMin, 0, 95),
     turnoverChanceMax: toFloat(input.turnoverChanceMax, DEFAULT_MATCH_SIMULATOR_SETTINGS.turnoverChanceMax, 1, 99),
     onCourtQuarterRecovery: toFloat(input.onCourtQuarterRecovery, DEFAULT_MATCH_SIMULATOR_SETTINGS.onCourtQuarterRecovery, 0, 100),

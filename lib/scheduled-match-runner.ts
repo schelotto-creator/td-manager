@@ -31,10 +31,6 @@ type TeamRow = {
   nombre: string;
   color_primario?: string | null;
   rotations?: unknown;
-  pj?: number | null;
-  v?: number | null;
-  d?: number | null;
-  pts?: number | null;
 };
 
 type RawPlayerRow = {
@@ -86,6 +82,15 @@ export type ScheduledMatchesRunSummary = {
   errors: Array<{ matchId: number; reason: string }>;
 };
 
+const chunkArray = <T>(items: T[], size: number) => {
+  if (size <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null;
 
@@ -116,6 +121,16 @@ const isFinalizeMatchRpcMissing = (error: unknown) => {
   );
 };
 
+const hasMissingStandingsColumns = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('column clubes.pj does not exist') ||
+    message.includes('column clubes.v does not exist') ||
+    message.includes('column clubes.d does not exist') ||
+    message.includes('column clubes.pts does not exist')
+  );
+};
+
 const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
   id: player.id,
   name: player.name,
@@ -132,6 +147,39 @@ const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
   experience: Number(player.experience || 0),
   forma: Number(player.forma || 80)
 });
+
+const buildSyntheticPlayerId = (teamId: TeamId, slotIndex: number) => {
+  let hash = 0;
+  for (const ch of String(teamId)) {
+    hash = (hash * 31 + ch.charCodeAt(0)) % 1_000_000;
+  }
+  return -1 * (hash * 10 + slotIndex + 1);
+};
+
+const buildPlaceholderPlayer = (teamId: TeamId, slotIndex: number): EnginePlayer => ({
+  id: buildSyntheticPlayerId(teamId, slotIndex),
+  name: `CPU Placeholder ${slotIndex + 1}`,
+  position: ['Base', 'Escolta', 'Alero', 'Ala-Pívot', 'Pívot'][slotIndex % 5],
+  overall: 45,
+  shooting_2pt: 45,
+  shooting_3pt: 40,
+  defense: 45,
+  passing: 42,
+  rebounding: 44,
+  dribbling: 42,
+  speed: 46,
+  stamina: 100,
+  experience: 0,
+  forma: 75
+});
+
+const ensureSimulationRoster = (teamId: TeamId, roster: EnginePlayer[]) => {
+  const output = [...roster];
+  while (output.length < 5) {
+    output.push(buildPlaceholderPlayer(teamId, output.length));
+  }
+  return output;
+};
 
 const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unknown): EngineTactics | undefined => {
   const candidate = isRecord(matchTactics)
@@ -153,6 +201,31 @@ const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unkno
   });
 
   return Object.keys(tactics).length > 0 ? tactics : undefined;
+};
+
+const fetchRosterByTeamIds = async (
+  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  teamIds: string[]
+) => {
+  const uniqueTeamIds = [...new Set(teamIds.map((id) => String(id)).filter(Boolean))];
+  const allPlayers: RawPlayerRow[] = [];
+
+  for (const batch of chunkArray(uniqueTeamIds, 20)) {
+    const { data, error } = await supabaseAdmin
+      .from('players')
+      .select(
+        'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id'
+      )
+      .in('team_id', batch);
+
+    if (error) {
+      throw new Error(`No se pudieron cargar plantillas: ${toErrorText(error)}`);
+    }
+
+    allPlayers.push(...((data as RawPlayerRow[] | null | undefined) || []));
+  }
+
+  return allPlayers;
 };
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
@@ -264,7 +337,9 @@ const buildPlayerGameStatsFromEvents = (
   });
 
   return Array.from(byPlayerId.values()).filter(
-    (row) => row.points > 0 || row.rebounds > 0 || row.assists > 0 || row.turnovers > 0
+    (row) =>
+      row.player_id > 0 &&
+      (row.points > 0 || row.rebounds > 0 || row.assists > 0 || row.turnovers > 0)
   );
 };
 
@@ -273,7 +348,7 @@ const buildPayloadFromTemplate = (
   template: {
     match: string;
     player: string;
-    team: string;
+    team?: string;
     points: string;
     rebounds: string;
     assists: string;
@@ -286,11 +361,11 @@ const buildPayloadFromTemplate = (
     const payload: Record<string, unknown> = {
       [template.match]: matchId,
       [template.player]: row.player_id,
-      [template.team]: row.team_id,
       [template.points]: row.points,
       [template.rebounds]: row.rebounds,
       [template.assists]: row.assists
     };
+    if (template.team) payload[template.team] = row.team_id;
     if (template.turnovers) payload[template.turnovers] = row.turnovers;
     if (template.efficiency) payload[template.efficiency] = row.efficiency;
     return payload;
@@ -304,6 +379,13 @@ const persistPlayerStats = async (
   if (rows.length === 0) return { ok: true as const };
 
   const templates = [
+    {
+      match: 'match_id',
+      player: 'player_id',
+      points: 'points',
+      rebounds: 'rebounds',
+      assists: 'assists'
+    },
     {
       match: 'match_id',
       player: 'player_id',
@@ -407,6 +489,11 @@ const applyRegularSeasonStandings = async (
     .from('clubes')
     .select('id, pj, v, d, pts')
     .in('id', [match.home_team_id, match.away_team_id]);
+
+  if (error && hasMissingStandingsColumns(error)) {
+    // Legacy schemas may not have standings columns yet; skip silently.
+    return;
+  }
 
   if (error || !clubs || clubs.length < 2) {
     throw new Error('No se pudo actualizar la clasificación.');
@@ -574,25 +661,17 @@ export const runScheduledMatches = async (
   const teamIds = [...new Set(dueMatches.flatMap((m) => [String(m.home_team_id), String(m.away_team_id)]))];
   const { data: teamsData, error: teamsError } = await supabaseAdmin
     .from('clubes')
-    .select('id,nombre,color_primario,rotations,pj,v,d,pts')
+    .select('id,nombre,color_primario,rotations')
     .in('id', teamIds);
   if (teamsError) {
     throw new Error(`No se pudieron cargar los equipos: ${toErrorText(teamsError)}`);
   }
 
-  const { data: rosterData, error: rosterError } = await supabaseAdmin
-    .from('players')
-    .select(
-      'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id'
-    )
-    .in('team_id', teamIds);
-  if (rosterError) {
-    throw new Error(`No se pudieron cargar plantillas: ${toErrorText(rosterError)}`);
-  }
+  const rosterData = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
 
   const teamsById = new Map<string, TeamRow>((teamsData || []).map((team: any) => [String(team.id), team as TeamRow]));
   const playersByTeam = new Map<string, EnginePlayer[]>();
-  (rosterData as RawPlayerRow[] | null | undefined || []).forEach((player) => {
+  rosterData.forEach((player) => {
     const teamId = String(player.team_id);
     const curr = playersByTeam.get(teamId) || [];
     curr.push(toEnginePlayer(player));
@@ -614,19 +693,18 @@ export const runScheduledMatches = async (
 
       const homeRoster = playersByTeam.get(String(match.home_team_id)) || [];
       const awayRoster = playersByTeam.get(String(match.away_team_id)) || [];
-
+      const simulationHomeRoster = ensureSimulationRoster(String(match.home_team_id), homeRoster);
+      const simulationAwayRoster = ensureSimulationRoster(String(match.away_team_id), awayRoster);
       if (homeRoster.length < 5 || awayRoster.length < 5) {
-        summary.skipped += 1;
-        summary.errors.push({ matchId: match.id, reason: 'Plantillas insuficientes (<5 jugadores).' });
-        continue;
+        summary.warnings.push(`match ${match.id}: plantilla incompleta, se usaron placeholders CPU.`);
       }
 
       const homeTactics = extractTacticsRotations(match.home_tactics, homeTeam.rotations);
       const awayTactics = extractTacticsRotations(match.away_tactics, awayTeam.rotations);
 
       const simulation = generateMatchSimulation({
-        homeRoster,
-        awayRoster,
+        homeRoster: simulationHomeRoster,
+        awayRoster: simulationAwayRoster,
         homeTactics,
         awayTactics,
         homeTeamName: homeTeam.nombre,
@@ -639,8 +717,8 @@ export const runScheduledMatches = async (
 
       const gameStatsRows = buildPlayerGameStatsFromEvents(
         simulation.events,
-        homeRoster,
-        awayRoster,
+        simulationHomeRoster,
+        simulationAwayRoster,
         String(match.home_team_id),
         String(match.away_team_id)
       );

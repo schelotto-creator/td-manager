@@ -153,6 +153,7 @@ const SIMULATOR_FIELD_GROUPS: Array<{
       { key: 'shotAttackerEnergyImpact', label: 'Impacto energía atacante', min: -2, max: 2, step: 0.01 },
       { key: 'shotDefenderEnergyImpact', label: 'Impacto energía defensor', min: -2, max: 2, step: 0.01 },
       { key: 'shotSkillImpact', label: 'Impacto diferencia skill', min: -2, max: 2, step: 0.01 },
+      { key: 'shotAverageQualityImpact', label: 'Impacto nivel medio liga', min: 0, max: 2, step: 0.01 },
       { key: 'shotChanceMin', label: 'Suelo prob. tiro', min: 1, max: 95, step: 0.1, hint: 'Probabilidad %' },
       { key: 'shotChanceMax', label: 'Techo prob. tiro', min: 5, max: 99, step: 0.1, hint: 'Probabilidad %' }
     ]
@@ -163,6 +164,7 @@ const SIMULATOR_FIELD_GROUPS: Array<{
       { key: 'turnoverBaseChance', label: 'Pérdida base', min: 0, max: 60, step: 0.1, hint: 'Probabilidad %' },
       { key: 'turnoverLowEnergyImpact', label: 'Impacto fatiga atacante', min: 0, max: 5, step: 0.01 },
       { key: 'turnoverDefenseEnergyImpact', label: 'Impacto energía defensor', min: 0, max: 5, step: 0.01 },
+      { key: 'turnoverAverageQualityImpact', label: 'Impacto nivel medio liga', min: 0, max: 2, step: 0.01 },
       { key: 'turnoverChanceMin', label: 'Suelo prob. pérdida', min: 0, max: 95, step: 0.1, hint: 'Probabilidad %' },
       { key: 'turnoverChanceMax', label: 'Techo prob. pérdida', min: 1, max: 99, step: 0.1, hint: 'Probabilidad %' },
       { key: 'offensiveReboundRate', label: 'Rebote ofensivo', min: 0.1, max: 0.9, step: 0.01, hint: '0.55 = 55%' }
