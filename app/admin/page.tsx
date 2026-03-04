@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target } from 'lucide-react';
+import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NAMES_DB } from '@/lib/names-db';
@@ -30,6 +30,13 @@ import {
   type PositionOverallConfig,
   type PositionRole
 } from '@/lib/position-overall-config';
+import {
+  DEFAULT_GITHUB_INTEGRATION_CONFIG,
+  fetchGitHubIntegrationConfig,
+  normalizeGitHubIntegrationConfig,
+  serializeGitHubIntegrationConfig,
+  type GitHubIntegrationConfig
+} from '@/lib/github-integration-config';
 
 // --- MASIVE DATA GENERATION LISTS (10x Bigger) ---
 const CIUDADES = [
@@ -207,6 +214,10 @@ export default function AdminDashboard() {
   const [positionOverallConfig, setPositionOverallConfig] = useState<PositionOverallConfig>(getDefaultPositionOverallConfig());
   const [positionConfigLoading, setPositionConfigLoading] = useState(false);
   const [positionConfigSaving, setPositionConfigSaving] = useState(false);
+  const [githubConfig, setGithubConfig] = useState<GitHubIntegrationConfig>(DEFAULT_GITHUB_INTEGRATION_CONFIG);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubSaving, setGithubSaving] = useState(false);
+  const [githubSyncing, setGithubSyncing] = useState(false);
   const [activeSection, setActiveSection] = useState<AdminSection>('users');
 
   useEffect(() => {
@@ -223,6 +234,7 @@ export default function AdminDashboard() {
             loadEconomyRules();
             loadSimulatorSettings();
             loadPositionOverallConfig();
+            loadGitHubConfig();
         } else {
             router.push('/');
         }
@@ -482,6 +494,124 @@ export default function AdminDashboard() {
     } finally {
       setPositionConfigSaving(false);
     }
+  };
+
+  const loadGitHubConfig = async () => {
+    setGithubLoading(true);
+    try {
+      const config = await fetchGitHubIntegrationConfig(supabase);
+      setGithubConfig(config);
+    } catch (err: any) {
+      addLog(`❌ Error cargando integración GitHub: ${err?.message || 'fallo desconocido'}`);
+      setGithubConfig(DEFAULT_GITHUB_INTEGRATION_CONFIG);
+    } finally {
+      setGithubLoading(false);
+    }
+  };
+
+  const updateGitHubConfigField = (field: 'owner' | 'repo' | 'branch', rawValue: string) => {
+    setGithubConfig((prev) => ({ ...prev, [field]: rawValue }));
+  };
+
+  const saveGitHubConfig = async () => {
+    if (githubSaving) return;
+
+    setGithubSaving(true);
+    try {
+      const normalized = normalizeGitHubIntegrationConfig(githubConfig);
+      const payload = serializeGitHubIntegrationConfig(normalized);
+
+      const { error } = await supabase
+        .from('github_integration_config')
+        .upsert(
+          {
+            id: 1,
+            owner: payload.owner,
+            repo: payload.repo,
+            branch: payload.branch
+          },
+          { onConflict: 'id' }
+        );
+
+      if (error) throw error;
+
+      setGithubConfig((prev) => ({ ...prev, ...normalized }));
+      addLog(`🐙 Configuración GitHub guardada (${payload.owner}/${payload.repo}#${payload.branch}).`);
+    } catch (err: any) {
+      addLog(`❌ Error guardando integración GitHub: ${err?.message || 'fallo desconocido'}`);
+    } finally {
+      setGithubSaving(false);
+    }
+  };
+
+  const syncGitHubRepository = async () => {
+    if (githubSyncing) return;
+
+    setGithubSyncing(true);
+    try {
+      const normalized = normalizeGitHubIntegrationConfig(githubConfig);
+      const payload = serializeGitHubIntegrationConfig(normalized);
+
+      const { error: saveError } = await supabase
+        .from('github_integration_config')
+        .upsert(
+          {
+            id: 1,
+            owner: payload.owner,
+            repo: payload.repo,
+            branch: payload.branch
+          },
+          { onConflict: 'id' }
+        );
+
+      if (saveError) throw saveError;
+
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) throw sessionError;
+
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) {
+        throw new Error('Tu sesión no tiene access token. Cierra sesión y vuelve a entrar.');
+      }
+
+      const response = await fetch('/api/github/sync', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        }
+      });
+
+      const result = await response.json().catch(() => null);
+      if (!response.ok || !result?.ok) {
+        throw new Error(result?.error || `Sync GitHub falló (HTTP ${response.status}).`);
+      }
+
+      if (result.config) {
+        setGithubConfig(normalizeGitHubIntegrationConfig(result.config));
+      } else {
+        await loadGitHubConfig();
+      }
+
+      const shortSha =
+        typeof result?.commit?.sha === 'string' && result.commit.sha.length > 0
+          ? result.commit.sha.slice(0, 7)
+          : 'sin sha';
+
+      addLog(`✅ GitHub sincronizado (${shortSha}) para ${payload.owner}/${payload.repo}#${payload.branch}.`);
+    } catch (err: any) {
+      addLog(`❌ Error sincronizando GitHub: ${err?.message || 'fallo desconocido'}`);
+      await loadGitHubConfig();
+    } finally {
+      setGithubSyncing(false);
+    }
+  };
+
+  const formatGitHubSyncDate = (value: string | null) => {
+    if (!value) return 'Nunca';
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) return value;
+    return parsed.toLocaleString('es-ES');
   };
 
   // --- MODO OBSERVADOR Y GESTIÓN DE USUARIOS ---
@@ -1255,6 +1385,139 @@ export default function AdminDashboard() {
                   {economySaving ? <Activity className="animate-spin" size={16} /> : <DollarSign size={16} />}
                   {economySaving ? 'Guardando reglas...' : 'Guardar reglas económicas'}
                 </button>
+              </div>
+
+              <div className="bg-slate-900 border border-white/5 p-6 rounded-3xl shadow-xl lg:col-span-2">
+                <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3 mb-4">
+                  <div>
+                    <h2 className="font-black uppercase text-white tracking-wide flex items-center gap-2">
+                      <Github size={18} className="text-indigo-300" />
+                      Integración GitHub
+                    </h2>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-widest">
+                      Repo editable y sync manual desde comisionado
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      onClick={loadGitHubConfig}
+                      disabled={githubLoading || githubSaving || githubSyncing || loading || isGenerating}
+                      className="px-3 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg border border-white/15 text-slate-300 hover:text-white hover:border-white/30 disabled:opacity-40 flex items-center gap-1"
+                    >
+                      <RefreshCcw size={12} className={githubLoading ? 'animate-spin' : ''} />
+                      Recargar
+                    </button>
+                    <button
+                      onClick={saveGitHubConfig}
+                      disabled={githubLoading || githubSaving || githubSyncing || loading || isGenerating}
+                      className="px-3 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white flex items-center gap-1"
+                    >
+                      {githubSaving ? <Activity size={12} className="animate-spin" /> : <Settings size={12} />}
+                      {githubSaving ? 'Guardando...' : 'Guardar'}
+                    </button>
+                    <button
+                      onClick={syncGitHubRepository}
+                      disabled={githubLoading || githubSaving || githubSyncing || loading || isGenerating}
+                      className="px-3 py-2 text-[10px] font-black uppercase tracking-widest rounded-lg bg-cyan-600 hover:bg-cyan-500 disabled:bg-slate-800 disabled:text-slate-500 text-white flex items-center gap-1"
+                    >
+                      {githubSyncing ? <Activity size={12} className="animate-spin" /> : <Github size={12} />}
+                      {githubSyncing ? 'Sincronizando...' : 'Sincronizar'}
+                    </button>
+                  </div>
+                </div>
+
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">
+                  Guarda owner/repo/branch aquí y sincroniza el último commit del repositorio usando el token backend (`GITHUB_TOKEN`).
+                </p>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+                  <label className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">
+                    Owner
+                    <input
+                      type="text"
+                      value={githubConfig.owner}
+                      onChange={(e) => updateGitHubConfigField('owner', e.target.value)}
+                      placeholder="schelotto-creator"
+                      className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                  <label className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">
+                    Repositorio
+                    <input
+                      type="text"
+                      value={githubConfig.repo}
+                      onChange={(e) => updateGitHubConfigField('repo', e.target.value)}
+                      placeholder="td-manager"
+                      className="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-[11px] font-bold text-white outline-none focus:border-indigo-400"
+                    />
+                  </label>
+                  <label className="text-[9px] text-slate-400 uppercase tracking-widest font-bold">
+                    Rama
+                    <div className="mt-1 flex items-center gap-2 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 focus-within:border-indigo-400">
+                      <GitBranch size={12} className="text-slate-500" />
+                      <input
+                        type="text"
+                        value={githubConfig.branch}
+                        onChange={(e) => updateGitHubConfigField('branch', e.target.value)}
+                        placeholder="main"
+                        className="w-full bg-transparent text-[11px] font-bold text-white outline-none"
+                      />
+                    </div>
+                  </label>
+                </div>
+
+                <div className="mt-4 bg-slate-950 border border-white/5 rounded-xl p-3 space-y-2">
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest">
+                    Último sync: <span className="text-white font-bold normal-case">{formatGitHubSyncDate(githubConfig.lastSyncedAt)}</span>
+                  </div>
+                  <div className="text-[10px] text-slate-400 uppercase tracking-widest">
+                    Estado:{' '}
+                    <span
+                      className={`font-black ${
+                        githubConfig.lastSyncStatus === 'success'
+                          ? 'text-emerald-300'
+                          : githubConfig.lastSyncStatus === 'error'
+                          ? 'text-red-300'
+                          : 'text-slate-300'
+                      }`}
+                    >
+                      {githubConfig.lastSyncStatus === 'success'
+                        ? 'OK'
+                        : githubConfig.lastSyncStatus === 'error'
+                        ? 'ERROR'
+                        : 'SIN EJECUTAR'}
+                    </span>
+                  </div>
+                  {githubConfig.lastCommitSha && (
+                    <div className="text-[10px] text-slate-400 uppercase tracking-widest">
+                      Commit:{' '}
+                      <span className="text-cyan-300 font-bold normal-case">{githubConfig.lastCommitSha.slice(0, 7)}</span>
+                      {githubConfig.lastCommitAuthor && (
+                        <span className="normal-case text-slate-300"> · {githubConfig.lastCommitAuthor}</span>
+                      )}
+                    </div>
+                  )}
+                  {githubConfig.lastCommitMessage && (
+                    <p className="text-[11px] text-slate-300 leading-relaxed">
+                      {githubConfig.lastCommitMessage}
+                    </p>
+                  )}
+                  {githubConfig.lastCommitUrl && (
+                    <a
+                      href={githubConfig.lastCommitUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="text-[10px] text-cyan-400 hover:text-cyan-300 uppercase tracking-widest font-bold"
+                    >
+                      Ver commit en GitHub
+                    </a>
+                  )}
+                  {githubConfig.lastSyncError && (
+                    <p className="text-[10px] text-red-300 uppercase tracking-widest">
+                      Error: {githubConfig.lastSyncError}
+                    </p>
+                  )}
+                </div>
               </div>
 
               <div className="bg-slate-900 border border-white/5 p-6 rounded-3xl shadow-xl lg:col-span-2">

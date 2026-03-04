@@ -47,6 +47,7 @@ El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que e
 - `NEXT_PUBLIC_SUPABASE_URL` (o `SUPABASE_URL`)
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `CRON_SECRET` (recomendado en producción)
+- `GITHUB_TOKEN` (necesario para `POST /api/github/sync` desde `/admin`)
 
 ### Cron en Vercel
 
@@ -62,6 +63,7 @@ Vercel enviará `Authorization: Bearer <CRON_SECRET>` si defines `CRON_SECRET` e
 Aplica las migraciones de `db/migrations`, en especial:
 
 - `20260302_automation_scheduler.sql`
+- `20260304_add_github_integration_config.sql`
 
 Esa migración añade:
 
