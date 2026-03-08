@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { runScheduledMatches } from '@/lib/scheduled-match-runner';
+import { getWeeklySalaryByOvr } from '@/lib/salary';
+import { fetchEconomyRules, getLeagueEconomy } from '@/lib/economy-balance';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -42,6 +44,84 @@ const isAuthorized = (request: NextRequest) => {
   return bearer === secret || query === secret;
 };
 
+// --- NUEVA LÓGICA DE FINANZAS EN TYPESCRIPT ---
+// Reemplaza la lógica SQL propensa a errores de copiar transacciones antiguas.
+const runWeeklyFinanceUpdate = async (supabase: any) => {
+  console.log('Ejecutando actualización financiera semanal (TypeScript)...');
+  
+  try {
+    // 1. Obtener reglas económicas y datos necesarios
+    const [economyRules, clubsRes, playersRes, leaguesRes] = await Promise.all([
+      fetchEconomyRules(supabase),
+      supabase.from('clubes').select('id, league_id, presupuesto'),
+      supabase.from('players').select('team_id, overall'),
+      supabase.from('ligas').select('id, nivel')
+    ]);
+
+    if (clubsRes.error) throw clubsRes.error;
+    const clubs = clubsRes.data || [];
+    const players = playersRes.data || [];
+    const leagues = leaguesRes.data || [];
+
+    // Mapas para acceso rápido
+    const playersByTeam: Record<string, any[]> = {};
+    players.forEach((p: any) => {
+      if (p.team_id) {
+        if (!playersByTeam[p.team_id]) playersByTeam[p.team_id] = [];
+        playersByTeam[p.team_id].push(p);
+      }
+    });
+
+    const leagueLevelMap = new Map();
+    leagues.forEach((l: any) => leagueLevelMap.set(l.id, l.nivel));
+
+    // 2. Procesar cada club
+    for (const club of clubs) {
+      const teamPlayers = playersByTeam[club.id] || [];
+      
+      // Calcular Salarios (Suma de salarios de jugadores actuales)
+      const totalSalarios = teamPlayers.reduce((sum: number, p: any) => {
+        return sum + getWeeklySalaryByOvr(p.overall);
+      }, 0);
+
+      // Calcular Mantenimiento de Estadio
+      let maintenance = 0;
+      if (club.league_id && leagueLevelMap.has(club.league_id)) {
+        const level = leagueLevelMap.get(club.league_id);
+        const economy = getLeagueEconomy(level, economyRules);
+        maintenance = economy.venueMaintenance;
+      }
+
+      const totalExpenses = totalSalarios + maintenance;
+
+      // 3. Actualizar Presupuesto y Registrar Transacción
+      if (totalExpenses > 0) {
+        // Actualizamos el presupuesto restando los gastos calculados
+        const { error: updateError } = await supabase
+          .from('clubes')
+          .update({ presupuesto: (club.presupuesto || 0) - totalExpenses })
+          .eq('id', club.id);
+
+        if (!updateError) {
+          // Insertamos una ÚNICA transacción consolidada para la semana
+          await supabase.from('finance_transactions').insert({
+            team_id: club.id,
+            concepto: 'Cierre Semanal: Salarios y Mantenimiento',
+            monto: -totalExpenses,
+            tipo: 'GASTO',
+            fecha: new Date().toISOString()
+          });
+        }
+      }
+    }
+    console.log(`Finanzas actualizadas correctamente para ${clubs.length} clubes.`);
+    return { status: 'ok', clubs_processed: clubs.length };
+  } catch (err) {
+    console.error('Error en runWeeklyFinanceUpdate:', err);
+    return { status: 'error', error: toErrorText(err) };
+  }
+};
+
 const runTick = async (request: NextRequest) => {
   if (!isAuthorized(request)) {
     return NextResponse.json({ ok: false, error: 'Unauthorized' }, { status: 401 });
@@ -73,6 +153,14 @@ const runTick = async (request: NextRequest) => {
       }
     } else {
       weeklyMaintenance = data || { status: 'ok' };
+    }
+
+    // Si se ejecutó el mantenimiento semanal (o se forzó), ejecutamos el cálculo financiero corregido en TS.
+    // Asumimos que si 'data' es truthy o forceWeekly es true, toca cierre semanal.
+    // Nota: Ajusta esta condición según lo que devuelva tu RPC exactamente.
+    if (forceWeekly || (weeklyMaintenance && weeklyMaintenance.status !== 'not_executed')) {
+       const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
+       weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }
 
     const scheduledMatches = await runScheduledMatches(supabaseAdmin, { now, maxMatches });

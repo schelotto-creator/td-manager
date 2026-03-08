@@ -189,6 +189,34 @@ export default function FinancePage() {
     })
     .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
   
+  const ingresoPatrocinadores = transLastWeek
+    .filter((t) => {
+      const concept = String(t.concepto || '').toLowerCase();
+      return t.tipo === 'INGRESO' && (concept.includes('patrocinadores') || concept.includes('socios'));
+    })
+    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+
+  const ingresoTaquillas = transLastWeek
+    .filter((t) => {
+      const concept = String(t.concepto || '').toLowerCase();
+      return t.tipo === 'INGRESO' && (concept.includes('taquillas') || concept.includes('entradas'));
+    })
+    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+
+  const gastoSueldos = transLastWeek
+    .filter((t) => {
+      const concept = String(t.concepto || '').toLowerCase();
+      return t.tipo === 'GASTO' && (concept.includes('salarios') || concept.includes('sueldos') || concept.includes('plantilla'));
+    })
+    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+
+  const gastoMantenimiento = transLastWeek
+    .filter((t) => {
+      const concept = String(t.concepto || '').toLowerCase();
+      return t.tipo === 'GASTO' && (concept.includes('mantenimiento') || concept.includes('pabellón'));
+    })
+    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+
   const realIngresos = transLastWeek
     .filter(t => t.tipo === 'INGRESO')
     .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
@@ -197,8 +225,9 @@ export default function FinancePage() {
     .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
 
   const beneficioAnterior = realIngresos - realGastos;
-  const totalIngresosEstConExtras = totalIngresosEst + ingresoMercado;
-  const totalGastosEstConExtras = totalGastosEst + gastoGimnasio + gastoMercado;
+  // Previsión: Solo ingresos y gastos fijos/recurrentes. Excluimos mercado y gimnasio (variables).
+  const totalIngresosEstConExtras = totalIngresosEst;
+  const totalGastosEstConExtras = totalGastosEst;
   const beneficioEsperadoConGym = totalIngresosEstConExtras - totalGastosEstConExtras;
 
   return (
@@ -251,7 +280,6 @@ export default function FinancePage() {
               <div className="space-y-3">
                 <Row label="Patrocinadores y Socios" value={estIngresosFijos} />
                 <Row label="Taquillas y Entradas" value={estTaquillas} />
-                <Row label="Mercado (Ventas)" value={ingresoMercado} />
               </div>
             </div>
             <div className="p-8 space-y-4 bg-slate-950/20">
@@ -261,8 +289,6 @@ export default function FinancePage() {
               <div className="space-y-3">
                 <Row label="Sueldos de Plantilla" value={estSueldos} isExpense />
                 <Row label="Mantenimiento Pabellón" value={estMantenimiento} isExpense />
-                <Row label="Gimnasio" value={gastoGimnasio} isExpense />
-                <Row label="Mercado" value={gastoMercado} isExpense />
               </div>
             </div>
           </div>
@@ -281,22 +307,35 @@ export default function FinancePage() {
             <h2 className="text-lg font-black uppercase tracking-widest text-slate-300">Balance Semana Anterior</h2>
           </div>
           
-          <div className="p-8 space-y-4 bg-slate-950/20">
-             <div className="flex justify-between items-center">
-               <span className="text-xs font-black uppercase tracking-widest text-slate-400">Ingresos Reales</span>
-               <span className="text-lg font-mono font-bold text-emerald-500">+{formatCurrency(realIngresos)}</span>
-             </div>
-             <div className="flex justify-between items-center">
-               <span className="text-xs font-black uppercase tracking-widest text-slate-400">Gastos Reales</span>
-               <span className="text-lg font-mono font-bold text-red-500">-{formatCurrency(realGastos)}</span>
-             </div>
-             <div className="h-px bg-white/10"></div>
-             <div className="flex justify-between items-center">
-               <span className="text-xs font-black uppercase tracking-widest text-slate-400">Resultado Consolidado</span>
-               <span className={`text-xl font-mono font-bold ${beneficioAnterior >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
-                 {beneficioAnterior >= 0 ? '+' : ''}{formatCurrency(beneficioAnterior)}
-               </span>
-             </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 divide-y md:divide-y-0 md:divide-x divide-white/5">
+            <div className="p-8 space-y-4">
+              <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-emerald-500/70 mb-6 flex justify-between border-b border-emerald-500/10 pb-2">
+                <span>Ingresos Reales</span>
+              </h3>
+              <div className="space-y-3">
+                <Row label="Patrocinadores y Socios" value={ingresoPatrocinadores} />
+                <Row label="Taquillas y Entradas" value={ingresoTaquillas} />
+                <Row label="Mercado (Ventas)" value={ingresoMercado} />
+              </div>
+            </div>
+            <div className="p-8 space-y-4 bg-slate-950/20">
+              <h3 className="text-[11px] font-black uppercase tracking-[0.2em] text-red-400/70 mb-6 flex justify-between border-b border-red-500/10 pb-2">
+                <span>Gastos Reales</span>
+              </h3>
+              <div className="space-y-3">
+                <Row label="Sueldos de Plantilla" value={gastoSueldos} isExpense />
+                <Row label="Mantenimiento Pabellón" value={gastoMantenimiento} isExpense />
+                <Row label="Gimnasio" value={gastoGimnasio} isExpense />
+                <Row label="Mercado" value={gastoMercado} isExpense />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-slate-950 border-t border-white/5 px-8 py-6 flex justify-between items-center">
+             <span className="text-xs font-black uppercase tracking-widest text-slate-400">Resultado Consolidado</span>
+             <span className={`text-xl font-mono font-bold ${beneficioAnterior >= 0 ? 'text-emerald-500' : 'text-red-500'}`}>
+               {beneficioAnterior >= 0 ? '+' : ''}{formatCurrency(beneficioAnterior)}
+             </span>
           </div>
         </div>
 

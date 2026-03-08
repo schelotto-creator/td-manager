@@ -40,7 +40,8 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que ejecuta:
 
 - Simulación automática de partidos con `played = false` y `match_date <= now`.
-- Mantenimiento semanal (finanzas + forma + reset de entrenos) mediante la RPC `run_weekly_maintenance`.
+- Mantenimiento semanal (forma + reset de entrenos) mediante la RPC `run_weekly_maintenance`.
+- Cálculo de finanzas semanal (salarios + mantenimiento) ejecutado directamente en el endpoint (TypeScript).
 
 ### Variables de entorno requeridas
 
@@ -69,4 +70,4 @@ Esa migración añade:
 
 - `match_date` en `matches` (con trigger/autocálculo por jornada).
 - `automation_runs` para idempotencia.
-- Función `run_weekly_maintenance(boolean)` para el cierre semanal.
+- Función `run_weekly_maintenance(boolean)` para el cierre semanal (forma y entrenos).
