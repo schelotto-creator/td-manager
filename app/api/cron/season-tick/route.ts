@@ -156,9 +156,11 @@ const runTick = async (request: NextRequest) => {
     }
 
     // Si se ejecutó el mantenimiento semanal (o se forzó), ejecutamos el cálculo financiero corregido en TS.
-    // Asumimos que si 'data' es truthy o forceWeekly es true, toca cierre semanal.
-    // Nota: Ajusta esta condición según lo que devuelva tu RPC exactamente.
-    if (forceWeekly || (weeklyMaintenance && (weeklyMaintenance as any).status !== 'not_executed')) {
+    // IMPORTANTE: Solo ejecutamos si el status es 'ok' (se acaba de realizar el mantenimiento).
+    // Si es 'already_done', significa que ya se hizo y NO debemos volver a cobrar.
+    const maintenanceStatus = (weeklyMaintenance as any)?.status;
+    
+    if (forceWeekly || maintenanceStatus === 'ok') {
        const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
        weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }

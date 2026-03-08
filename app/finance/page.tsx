@@ -226,6 +226,7 @@ export default function FinancePage() {
 
   const beneficioAnterior = realIngresos - realGastos;
   // Previsión: Solo ingresos y gastos fijos/recurrentes. Excluimos mercado y gimnasio (variables).
+  // FIX: Aseguramos que no se proyecten gastos únicos en la previsión futura.
   const totalIngresosEstConExtras = totalIngresosEst;
   const totalGastosEstConExtras = totalGastosEst;
   const beneficioEsperadoConGym = totalIngresosEstConExtras - totalGastosEstConExtras;
