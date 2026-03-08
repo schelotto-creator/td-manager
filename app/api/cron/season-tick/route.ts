@@ -137,7 +137,7 @@ const runTick = async (request: NextRequest) => {
   const maxMatches = Math.max(1, Math.min(300, requestedMaxMatches || envMaxMatches));
   const supabaseAdmin = getSupabaseAdmin();
 
-  let weeklyMaintenance: unknown = { status: 'not_executed' };
+  let weeklyMaintenance: any = { status: 'not_executed' };
   const warnings: string[] = [];
 
   try {
@@ -158,7 +158,7 @@ const runTick = async (request: NextRequest) => {
     // Si se ejecutó el mantenimiento semanal (o se forzó), ejecutamos el cálculo financiero corregido en TS.
     // Asumimos que si 'data' es truthy o forceWeekly es true, toca cierre semanal.
     // Nota: Ajusta esta condición según lo que devuelva tu RPC exactamente.
-    if (forceWeekly || (weeklyMaintenance && weeklyMaintenance.status !== 'not_executed')) {
+    if (forceWeekly || (weeklyMaintenance && (weeklyMaintenance as any).status !== 'not_executed')) {
        const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
        weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }
