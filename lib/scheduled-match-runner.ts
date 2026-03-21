@@ -3,7 +3,8 @@ import {
   generateMatchSimulation,
   type EnginePlayer,
   type EngineTactics,
-  type MatchEvent
+  type MatchEvent,
+  type TeamGamePlan
 } from '@/lib/match-engine';
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
@@ -24,6 +25,11 @@ type MatchRow = {
   home_tactics?: unknown;
   away_tactics?: unknown;
   play_by_play?: unknown;
+  simulated_home_score?: number | null;
+  simulated_away_score?: number | null;
+  simulated_play_by_play?: unknown;
+  simulated_player_stats?: unknown;
+  simulation_ready_at?: string | null;
 };
 
 type TeamRow = {
@@ -31,6 +37,8 @@ type TeamRow = {
   nombre: string;
   color_primario?: string | null;
   rotations?: unknown;
+  tactic_offense?: string | null;
+  tactic_defense?: string | null;
 };
 
 type RawPlayerRow = {
@@ -73,14 +81,43 @@ type FinalizeResult =
 export type ScheduledMatchesRunSummary = {
   dueCount: number;
   totalDueWithoutLimit: number;
+  prepWindowCount: number;
   processed: number;
   simulated: number;
+  finalized: number;
   alreadyPlayed: number;
   skipped: number;
   pendingWithoutDate: number;
   warnings: string[];
   errors: Array<{ matchId: number; reason: string }>;
 };
+
+type PreparedSimulation = {
+  finalHome: number;
+  finalAway: number;
+  events: MatchEvent[];
+  statsRows: PlayerGameStat[];
+};
+
+type PrepareSimulationResult =
+  | { status: 'ok'; match: MatchRow }
+  | { status: 'already_prepared'; match: MatchRow }
+  | { status: 'already_played'; match: MatchRow };
+
+const DEFAULT_SCHEDULED_MATCH_PREP_MINUTES = 15;
+const MATCH_SELECT_FIELDS =
+  'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
+const MATCH_SCHEDULE_TIME_ZONE = 'Europe/Madrid';
+const MADRID_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  timeZone: MATCH_SCHEDULE_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
 
 const chunkArray = <T>(items: T[], size: number) => {
   if (size <= 0) return [items];
@@ -129,6 +166,101 @@ const hasMissingStandingsColumns = (error: unknown) => {
     message.includes('column clubes.d does not exist') ||
     message.includes('column clubes.pts does not exist')
   );
+};
+
+const getScheduledMatchPrepMinutes = () => {
+  const raw = Number(
+    process.env.SCHEDULED_MATCH_PREP_MINUTES ||
+      process.env.CRON_MATCH_PREP_MINUTES ||
+      DEFAULT_SCHEDULED_MATCH_PREP_MINUTES
+  );
+  if (!Number.isFinite(raw)) return DEFAULT_SCHEDULED_MATCH_PREP_MINUTES;
+  return Math.max(1, Math.min(180, Math.round(raw)));
+};
+
+const getMatchDateMs = (match: MatchRow) => {
+  if (!match.match_date) return null;
+  const parsed = new Date(match.match_date);
+  const time = parsed.getTime();
+  return Number.isFinite(time) ? time : null;
+};
+
+const isMatchDueBy = (match: MatchRow, cutoff: Date) => {
+  const matchDateMs = getMatchDateMs(match);
+  if (matchDateMs === null) return false;
+  return matchDateMs <= cutoff.getTime();
+};
+
+const getPreparedSimulation = (match: MatchRow): PreparedSimulation | null => {
+  if (!Array.isArray(match.simulated_play_by_play)) return null;
+
+  const finalHome = Number(match.simulated_home_score);
+  const finalAway = Number(match.simulated_away_score);
+  if (!Number.isFinite(finalHome) || !Number.isFinite(finalAway)) return null;
+
+  return {
+    finalHome,
+    finalAway,
+    events: match.simulated_play_by_play as MatchEvent[],
+    statsRows: Array.isArray(match.simulated_player_stats)
+      ? (match.simulated_player_stats as PlayerGameStat[])
+      : []
+  };
+};
+
+const getFormatterPartNumber = (
+  parts: Intl.DateTimeFormatPart[],
+  type: Intl.DateTimeFormatPartTypes
+) => {
+  const value = parts.find((part) => part.type === type)?.value;
+  return Number(value || '0');
+};
+
+const buildUtcDateFromMadridLocal = (
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour: number,
+  minute: number
+) => {
+  const initialUtcGuess = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
+  const zonedParts = MADRID_DATE_TIME_FORMATTER.formatToParts(initialUtcGuess);
+  const actualLocalMs = Date.UTC(
+    getFormatterPartNumber(zonedParts, 'year'),
+    getFormatterPartNumber(zonedParts, 'month') - 1,
+    getFormatterPartNumber(zonedParts, 'day'),
+    getFormatterPartNumber(zonedParts, 'hour'),
+    getFormatterPartNumber(zonedParts, 'minute'),
+    getFormatterPartNumber(zonedParts, 'second')
+  );
+  const desiredLocalMs = Date.UTC(year, monthIndex, day, hour, minute, 0);
+  return new Date(initialUtcGuess.getTime() + (desiredLocalMs - actualLocalMs));
+};
+
+const computeMatchDateFromJornada = (jornada: number | null | undefined) => {
+  const numericRound = Number(jornada);
+  if (!Number.isFinite(numericRound)) return null;
+
+  const round = Math.max(1, Math.trunc(numericRound));
+  const weekOffset = Math.floor((round - 1) / 2);
+  const isSaturday = round % 2 === 0;
+  const daysToAdd = weekOffset * 7 + (isSaturday ? 3 : 0);
+  const baseDate = new Date(Date.UTC(2026, 2, 4 + daysToAdd, 0, 0, 0));
+
+  return buildUtcDateFromMadridLocal(
+    baseDate.getUTCFullYear(),
+    baseDate.getUTCMonth(),
+    baseDate.getUTCDate(),
+    isSaturday ? 12 : 18,
+    30
+  );
+};
+
+const compareMatchesByDate = (a: MatchRow, b: MatchRow) => {
+  const aTime = getMatchDateMs(a) ?? Number.MAX_SAFE_INTEGER;
+  const bTime = getMatchDateMs(b) ?? Number.MAX_SAFE_INTEGER;
+  if (aTime !== bTime) return aTime - bTime;
+  return a.id - b.id;
 };
 
 const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
@@ -181,10 +313,10 @@ const ensureSimulationRoster = (teamId: TeamId, roster: EnginePlayer[]) => {
   return output;
 };
 
-const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unknown): EngineTactics | undefined => {
-  const candidate = isRecord(matchTactics)
-    ? (isRecord(matchTactics.rotations) ? matchTactics.rotations : matchTactics)
-    : fallbackRotations;
+const extractTacticsRotations = (source: unknown): EngineTactics | undefined => {
+  const candidate = isRecord(source)
+    ? (isRecord(source.rotations) ? source.rotations : source)
+    : source;
 
   if (!isRecord(candidate)) return undefined;
 
@@ -203,8 +335,30 @@ const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unkno
   return Object.keys(tactics).length > 0 ? tactics : undefined;
 };
 
+const extractTeamGamePlan = (matchTactics: unknown, fallbackTeam?: TeamRow): TeamGamePlan => {
+  const rotations =
+    extractTacticsRotations(matchTactics) ||
+    extractTacticsRotations(fallbackTeam?.rotations);
+
+  const offenseStyle =
+    isRecord(matchTactics) && typeof matchTactics.offense === 'string'
+      ? matchTactics.offense
+      : fallbackTeam?.tactic_offense || undefined;
+
+  const defenseStyle =
+    isRecord(matchTactics) && typeof matchTactics.defense === 'string'
+      ? matchTactics.defense
+      : fallbackTeam?.tactic_defense || undefined;
+
+  return {
+    rotations,
+    offenseStyle,
+    defenseStyle
+  };
+};
+
 const fetchRosterByTeamIds = async (
-  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  supabaseAdmin: SupabaseClient,
   teamIds: string[]
 ) => {
   const uniqueTeamIds = [...new Set(teamIds.map((id) => String(id)).filter(Boolean))];
@@ -372,7 +526,7 @@ const buildPayloadFromTemplate = (
   });
 
 const persistPlayerStats = async (
-  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  supabaseAdmin: SupabaseClient,
   matchId: number,
   rows: PlayerGameStat[]
 ) => {
@@ -478,7 +632,7 @@ const persistPlayerStats = async (
 };
 
 const applyRegularSeasonStandings = async (
-  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  supabaseAdmin: SupabaseClient,
   match: MatchRow,
   finalHome: number,
   finalAway: number
@@ -531,7 +685,7 @@ const applyRegularSeasonStandings = async (
 };
 
 const finalizeMatchPersistence = async (
-  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  supabaseAdmin: SupabaseClient,
   match: MatchRow,
   finalHome: number,
   finalAway: number,
@@ -594,12 +748,133 @@ const finalizeMatchPersistence = async (
   return { status: 'ok', warning };
 };
 
+const prepareMatchSimulation = async (
+  supabaseAdmin: SupabaseClient,
+  match: MatchRow,
+  prepared: PreparedSimulation,
+  now: Date
+): Promise<PrepareSimulationResult> => {
+  const payload = {
+    simulated_home_score: prepared.finalHome,
+    simulated_away_score: prepared.finalAway,
+    simulated_play_by_play: prepared.events,
+    simulated_player_stats: prepared.statsRows,
+    simulation_ready_at: now.toISOString()
+  };
+
+  const { data: updatedMatch, error: updateError } = await supabaseAdmin
+    .from('matches')
+    .update(payload)
+    .eq('id', match.id)
+    .eq('played', false)
+    .is('simulated_play_by_play', null)
+    .select(MATCH_SELECT_FIELDS)
+    .maybeSingle();
+
+  if (updateError) {
+    throw new Error(`No se pudo precalcular el partido ${match.id}: ${toErrorText(updateError)}`);
+  }
+
+  if (updatedMatch) {
+    return { status: 'ok', match: updatedMatch as MatchRow };
+  }
+
+  const { data: latestMatch, error: latestMatchError } = await supabaseAdmin
+    .from('matches')
+    .select(MATCH_SELECT_FIELDS)
+    .eq('id', match.id)
+    .maybeSingle();
+
+  if (latestMatchError || !latestMatch) {
+    throw new Error(
+      `No se pudo recuperar el partido ${match.id} tras precálculo: ${toErrorText(latestMatchError)}`
+    );
+  }
+
+  const normalized = latestMatch as MatchRow;
+  if (normalized.played) {
+    return { status: 'already_played', match: normalized };
+  }
+
+  return { status: 'already_prepared', match: normalized };
+};
+
+const clearPreparedSimulation = async (
+  supabaseAdmin: SupabaseClient,
+  matchId: number
+) => {
+  const { error } = await supabaseAdmin
+    .from('matches')
+    .update({
+      simulated_home_score: null,
+      simulated_away_score: null,
+      simulated_play_by_play: null,
+      simulated_player_stats: null,
+      simulation_ready_at: null
+    })
+    .eq('id', matchId);
+
+  if (error) {
+    throw new Error(`No se pudo limpiar el precálculo del partido ${matchId}: ${toErrorText(error)}`);
+  }
+};
+
+const persistMissingMatchDate = async (
+  supabaseAdmin: SupabaseClient,
+  match: MatchRow
+) => {
+  if (!match.match_date) return { match, updated: false };
+
+  const { data: updatedMatch, error: updateError } = await supabaseAdmin
+    .from('matches')
+    .update({ match_date: match.match_date })
+    .eq('id', match.id)
+    .is('match_date', null)
+    .select(MATCH_SELECT_FIELDS)
+    .maybeSingle();
+
+  if (updateError) {
+    throw new Error(`No se pudo guardar match_date para el partido ${match.id}: ${toErrorText(updateError)}`);
+  }
+
+  if (updatedMatch) {
+    return { match: updatedMatch as MatchRow, updated: true };
+  }
+
+  const { data: latestMatch, error: latestMatchError } = await supabaseAdmin
+    .from('matches')
+    .select(MATCH_SELECT_FIELDS)
+    .eq('id', match.id)
+    .maybeSingle();
+
+  if (latestMatchError || !latestMatch) {
+    throw new Error(
+      `No se pudo recuperar el partido ${match.id} tras actualizar su fecha: ${toErrorText(latestMatchError)}`
+    );
+  }
+
+  const normalizedLatest = latestMatch as MatchRow;
+  if (!normalizedLatest.match_date) {
+    return {
+      match: {
+        ...normalizedLatest,
+        match_date: match.match_date
+      },
+      updated: false
+    };
+  }
+
+  return { match: normalizedLatest, updated: false };
+};
+
 export const runScheduledMatches = async (
-  supabaseAdmin: SupabaseClient<any, 'public', any>,
+  supabaseAdmin: SupabaseClient,
   opts?: { now?: Date; maxMatches?: number }
 ): Promise<ScheduledMatchesRunSummary> => {
   const now = opts?.now || new Date();
   const maxMatches = Math.max(1, Math.min(300, Number(opts?.maxMatches || 40)));
+  const prepLeadMinutes = getScheduledMatchPrepMinutes();
+  const prepCutoff = new Date(now.getTime() + prepLeadMinutes * 60_000);
 
   const { count: totalDueWithoutLimit, error: totalDueError } = await supabaseAdmin
     .from('matches')
@@ -622,54 +897,120 @@ export const runScheduledMatches = async (
     throw new Error(`No se pudo contar partidos sin fecha: ${toErrorText(nullDateError)}`);
   }
 
-  const { data: dueMatchesData, error: dueMatchesError } = await supabaseAdmin
+  const { count: prepWindowCount, error: prepWindowError } = await supabaseAdmin
     .from('matches')
-    .select(
-      'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play'
-    )
+    .select('id', { count: 'exact', head: true })
     .eq('played', false)
     .not('match_date', 'is', null)
-    .lte('match_date', now.toISOString())
+    .lte('match_date', prepCutoff.toISOString());
+
+  if (prepWindowError) {
+    throw new Error(`No se pudo contar partidos en ventana de precálculo: ${toErrorText(prepWindowError)}`);
+  }
+
+  let inferredDueWithoutDateCount = 0;
+  let inferredPrepWindowCount = 0;
+  let recoveredMatchDateCount = 0;
+  const inferredCandidateMatches: MatchRow[] = [];
+
+  if (Number(pendingWithoutDate || 0) > 0) {
+    const { data: missingDateMatchesData, error: missingDateMatchesError } = await supabaseAdmin
+      .from('matches')
+      .select(MATCH_SELECT_FIELDS)
+      .eq('played', false)
+      .is('match_date', null)
+      .not('jornada', 'is', null)
+      .order('jornada', { ascending: true })
+      .order('id', { ascending: true });
+
+    if (missingDateMatchesError) {
+      throw new Error(
+        `No se pudieron cargar partidos sin fecha programada: ${toErrorText(missingDateMatchesError)}`
+      );
+    }
+
+    for (const rawMatch of (missingDateMatchesData || []) as MatchRow[]) {
+      const inferredMatchDate = computeMatchDateFromJornada(rawMatch.jornada);
+      if (!inferredMatchDate) continue;
+
+      const inferredMatch: MatchRow = {
+        ...rawMatch,
+        match_date: inferredMatchDate.toISOString()
+      };
+
+      if (isMatchDueBy(inferredMatch, now)) {
+        inferredDueWithoutDateCount += 1;
+      }
+      if (!isMatchDueBy(inferredMatch, prepCutoff)) {
+        continue;
+      }
+
+      inferredPrepWindowCount += 1;
+
+      const persisted = await persistMissingMatchDate(supabaseAdmin, inferredMatch);
+      inferredCandidateMatches.push(persisted.match);
+      if (persisted.updated) recoveredMatchDateCount += 1;
+    }
+  }
+
+  const { data: candidateMatchesData, error: candidateMatchesError } = await supabaseAdmin
+    .from('matches')
+    .select(MATCH_SELECT_FIELDS)
+    .eq('played', false)
+    .not('match_date', 'is', null)
+    .lte('match_date', prepCutoff.toISOString())
     .order('match_date', { ascending: true })
     .order('id', { ascending: true })
     .limit(maxMatches);
 
-  if (dueMatchesError) {
-    throw new Error(`No se pudieron cargar partidos pendientes: ${toErrorText(dueMatchesError)}`);
+  if (candidateMatchesError) {
+    throw new Error(`No se pudieron cargar partidos pendientes: ${toErrorText(candidateMatchesError)}`);
   }
 
-  const dueMatches = (dueMatchesData || []) as MatchRow[];
+  const candidateMatches = [...new Map(
+    [...((candidateMatchesData || []) as MatchRow[]), ...inferredCandidateMatches]
+      .sort(compareMatchesByDate)
+      .map((match) => [match.id, match])
+  ).values()].slice(0, maxMatches);
   const summary: ScheduledMatchesRunSummary = {
-    dueCount: dueMatches.length,
-    totalDueWithoutLimit: Number(totalDueWithoutLimit || 0),
+    dueCount: candidateMatches.filter((match) => isMatchDueBy(match, now)).length,
+    totalDueWithoutLimit: Number(totalDueWithoutLimit || 0) + inferredDueWithoutDateCount,
+    prepWindowCount: Number(prepWindowCount || 0) + inferredPrepWindowCount,
     processed: 0,
     simulated: 0,
+    finalized: 0,
     alreadyPlayed: 0,
     skipped: 0,
-    pendingWithoutDate: Number(pendingWithoutDate || 0),
+    pendingWithoutDate: Math.max(0, Number(pendingWithoutDate || 0) - recoveredMatchDateCount),
     warnings: [],
     errors: []
   };
 
-  if (dueMatches.length === 0) return summary;
+  if (recoveredMatchDateCount > 0) {
+    summary.warnings.push(
+      `${recoveredMatchDateCount} partidos pendientes recuperaron su match_date automáticamente desde jornada.`
+    );
+  }
+
+  if (candidateMatches.length === 0) return summary;
 
   const [settings, positionOverallConfig] = await Promise.all([
     fetchMatchSimulatorSettings(supabaseAdmin),
     fetchPositionOverallConfig(supabaseAdmin)
   ]);
 
-  const teamIds = [...new Set(dueMatches.flatMap((m) => [String(m.home_team_id), String(m.away_team_id)]))];
+  const teamIds = [...new Set(candidateMatches.flatMap((m) => [String(m.home_team_id), String(m.away_team_id)]))];
   const { data: teamsData, error: teamsError } = await supabaseAdmin
     .from('clubes')
-    .select('id,nombre,color_primario,rotations')
+    .select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense')
     .in('id', teamIds);
   if (teamsError) {
     throw new Error(`No se pudieron cargar los equipos: ${toErrorText(teamsError)}`);
   }
 
   const rosterData = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
-
-  const teamsById = new Map<string, TeamRow>((teamsData || []).map((team: any) => [String(team.id), team as TeamRow]));
+  const normalizedTeams = ((teamsData || []) as TeamRow[]).map((team) => [String(team.id), team] as const);
+  const teamsById = new Map<string, TeamRow>(normalizedTeams);
   const playersByTeam = new Map<string, EnginePlayer[]>();
   rosterData.forEach((player) => {
     const teamId = String(player.team_id);
@@ -678,7 +1019,10 @@ export const runScheduledMatches = async (
     playersByTeam.set(teamId, curr);
   });
 
-  for (const match of dueMatches) {
+  const matchesById = new Map<number, MatchRow>(candidateMatches.map((match) => [match.id, match]));
+  const matchesToPrepare = candidateMatches.filter((match) => getPreparedSimulation(match) === null);
+
+  for (const match of matchesToPrepare) {
     summary.processed += 1;
 
     try {
@@ -699,14 +1043,16 @@ export const runScheduledMatches = async (
         summary.warnings.push(`match ${match.id}: plantilla incompleta, se usaron placeholders CPU.`);
       }
 
-      const homeTactics = extractTacticsRotations(match.home_tactics, homeTeam.rotations);
-      const awayTactics = extractTacticsRotations(match.away_tactics, awayTeam.rotations);
+      const homeGamePlan = extractTeamGamePlan(match.home_tactics, homeTeam);
+      const awayGamePlan = extractTeamGamePlan(match.away_tactics, awayTeam);
 
       const simulation = generateMatchSimulation({
         homeRoster: simulationHomeRoster,
         awayRoster: simulationAwayRoster,
-        homeTactics,
-        awayTactics,
+        homeTactics: homeGamePlan.rotations,
+        awayTactics: awayGamePlan.rotations,
+        homeGamePlan,
+        awayGamePlan,
         homeTeamName: homeTeam.nombre,
         awayTeamName: awayTeam.nombre,
         homeTeamColor: homeTeam.color_primario || '#3b82f6',
@@ -723,20 +1069,69 @@ export const runScheduledMatches = async (
         String(match.away_team_id)
       );
 
+      const prepared = await prepareMatchSimulation(
+        supabaseAdmin,
+        match,
+        {
+          finalHome: simulation.finalScore.home,
+          finalAway: simulation.finalScore.away,
+          events: simulation.events,
+          statsRows: gameStatsRows
+        },
+        now
+      );
+
+      matchesById.set(match.id, prepared.match);
+
+      if (prepared.status === 'ok') {
+        summary.simulated += 1;
+      } else if (prepared.status === 'already_played') {
+        summary.alreadyPlayed += 1;
+      }
+    } catch (error) {
+      summary.errors.push({ matchId: match.id, reason: toErrorText(error) });
+    }
+  }
+
+  const matchesToFinalize = Array.from(matchesById.values()).filter(
+    (match) => isMatchDueBy(match, now) && getPreparedSimulation(match) !== null
+  );
+
+  for (const match of matchesToFinalize) {
+    summary.processed += 1;
+
+    try {
+      const prepared = getPreparedSimulation(match);
+      if (!prepared) {
+        summary.skipped += 1;
+        summary.errors.push({
+          matchId: match.id,
+          reason: 'Partido vencido sin replay precalculado disponible.'
+        });
+        continue;
+      }
+
       const result = await finalizeMatchPersistence(
         supabaseAdmin,
         match,
-        simulation.finalScore.home,
-        simulation.finalScore.away,
-        simulation.events,
-        gameStatsRows
+        prepared.finalHome,
+        prepared.finalAway,
+        prepared.events,
+        prepared.statsRows
       );
 
       if (result.status === 'already_played') {
         summary.alreadyPlayed += 1;
       } else {
-        summary.simulated += 1;
+        summary.finalized += 1;
       }
+
+      try {
+        await clearPreparedSimulation(supabaseAdmin, match.id);
+      } catch (cleanupError) {
+        summary.warnings.push(`match ${match.id}: ${toErrorText(cleanupError)}`);
+      }
+
       if (result.warning) summary.warnings.push(`match ${match.id}: ${result.warning}`);
     } catch (error) {
       summary.errors.push({ matchId: match.id, reason: toErrorText(error) });
