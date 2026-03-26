@@ -31,10 +31,19 @@ export type EnginePlayer = {
   experience?: number;
   forma?: number;
   currentStamina?: number;
+  assignedRole?: CourtRole;
 };
 
 export type QuarterRotation = Record<string, number | null | undefined>;
 export type EngineTactics = Partial<Record<'q1' | 'q2' | 'q3' | 'q4', QuarterRotation>>;
+export type OffenseStyle = 'BALANCED' | 'RUN_AND_GUN' | 'PAINT_FOCUS';
+export type DefenseStyle = 'MAN_TO_MAN' | 'ZONE_2_3' | 'PRESSING';
+
+export type TeamGamePlan = {
+  rotations?: EngineTactics | null;
+  offenseStyle?: OffenseStyle | string | null;
+  defenseStyle?: DefenseStyle | string | null;
+};
 
 export type LineupPlayer = {
   id: number;
@@ -76,6 +85,8 @@ export type GenerateMatchParams = {
   awayRoster: EnginePlayer[];
   homeTactics?: EngineTactics | null;
   awayTactics?: EngineTactics | null;
+  homeGamePlan?: TeamGamePlan | null;
+  awayGamePlan?: TeamGamePlan | null;
   homeTeamName?: string;
   awayTeamName?: string;
   homeTeamColor?: string;
@@ -86,6 +97,16 @@ export type GenerateMatchParams = {
 
 const roleOrder: CourtRole[] = ['Base', 'Escolta', 'Alero', 'Ala-Pívot', 'Pívot'];
 const FALLBACK_POSITION_OVERALL_CONFIG = getDefaultPositionOverallConfig();
+const OFFENSE_LABELS: Record<OffenseStyle, string> = {
+  BALANCED: 'Equilibrado',
+  RUN_AND_GUN: 'Run & Gun',
+  PAINT_FOCUS: 'Pintura'
+};
+const DEFENSE_LABELS: Record<DefenseStyle, string> = {
+  MAN_TO_MAN: 'Hombre a Hombre',
+  ZONE_2_3: 'Zona 2-3',
+  PRESSING: 'Presion Alta'
+};
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
@@ -99,6 +120,21 @@ export const calculateRoleRating = (
   const baseRating = calculateWeightedOverallForRole(player, role, positionOverallConfig);
   return applyFormModifier(baseRating, player.forma);
 };
+
+const normalizeOffenseStyle = (value: unknown): OffenseStyle => {
+  if (value === 'RUN_AND_GUN' || value === 'PAINT_FOCUS') return value;
+  return 'BALANCED';
+};
+
+const normalizeDefenseStyle = (value: unknown): DefenseStyle => {
+  if (value === 'ZONE_2_3' || value === 'PRESSING') return value;
+  return 'MAN_TO_MAN';
+};
+
+const getPlayerRole = (player: EnginePlayer) => player.assignedRole || normalizePosition(player.position);
+
+const formatGamePlanSummary = (offenseStyle: OffenseStyle, defenseStyle: DefenseStyle) =>
+  `${OFFENSE_LABELS[offenseStyle]} / ${DEFENSE_LABELS[defenseStyle]}`;
 
 const mapSlotToRole = (slot: string): CourtRole | null => {
   const s = (slot || '').toLowerCase();
@@ -153,51 +189,36 @@ const pickUniqueLineup = (
   return [...unique, ...extras];
 };
 
+const clearAssignedRoles = (roster: EnginePlayer[]) => {
+  roster.forEach((player) => {
+    delete player.assignedRole;
+  });
+};
+
 const toLineupState = (
   lineup: EnginePlayer[],
   positionOverallConfig: PositionOverallConfig = FALLBACK_POSITION_OVERALL_CONFIG
 ): LineupPlayer[] => {
-  const usedIds = new Set<number>();
-  const result: LineupPlayer[] = [];
-
-  for (const role of roleOrder) {
-    const natural = lineup.find(
-      (player) => !usedIds.has(player.id) && getBestRoleForPlayer(player, positionOverallConfig) === role
-    );
-    if (natural) {
-      usedIds.add(natural.id);
-      result.push({
-        id: natural.id,
-        name: natural.name,
+  return [...lineup]
+    .sort((a, b) => roleOrder.indexOf(getPlayerRole(a)) - roleOrder.indexOf(getPlayerRole(b)))
+    .map((player) => {
+      const role = getPlayerRole(player);
+      return {
+        id: player.id,
+        name: player.name,
         position: role,
-        overall: calculateRoleRating(natural, role, positionOverallConfig),
-        energy: Math.round(natural.currentStamina ?? natural.stamina ?? 100)
-      });
-      continue;
-    }
-
-    const fallback = lineup.find((player) => !usedIds.has(player.id));
-    if (fallback) {
-      usedIds.add(fallback.id);
-      result.push({
-        id: fallback.id,
-        name: fallback.name,
-        position: role,
-        overall: calculateRoleRating(fallback, role, positionOverallConfig),
-        energy: Math.round(fallback.currentStamina ?? fallback.stamina ?? 100)
-      });
-    }
-  }
-
-  return result;
+        overall: calculateRoleRating(player, role, positionOverallConfig),
+        energy: Math.round(player.currentStamina ?? player.stamina ?? 100)
+      };
+    });
 };
 
-const getQuarterLineupState = (
+const getQuarterLineup = (
   roster: EnginePlayer[],
   quarterIndex: number,
   tactics?: EngineTactics | null,
   positionOverallConfig: PositionOverallConfig = FALLBACK_POSITION_OVERALL_CONFIG
-): LineupPlayer[] => {
+): EnginePlayer[] => {
   const quarterKey = `q${quarterIndex + 1}` as 'q1' | 'q2' | 'q3' | 'q4';
   const fallbackPlayers = pickUniqueLineup(roster, positionOverallConfig);
   const usedIds = new Set<number>();
@@ -217,7 +238,10 @@ const getQuarterLineupState = (
 
   for (const role of roleOrder) {
     if (rolePlayers.has(role)) continue;
-    const candidate = fallbackPlayers.find((player) => !usedIds.has(player.id));
+    const candidate =
+      fallbackPlayers.find(
+        (player) => !usedIds.has(player.id) && getBestRoleForPlayer(player, positionOverallConfig) === role
+      ) || fallbackPlayers.find((player) => !usedIds.has(player.id));
     if (candidate) {
       rolePlayers.set(role, candidate);
       usedIds.add(candidate.id);
@@ -228,65 +252,74 @@ const getQuarterLineupState = (
     .map((role) => {
       const player = rolePlayers.get(role);
       if (!player) return null;
-      return {
-        id: player.id,
-        name: player.name,
-        position: role,
-        overall: calculateRoleRating(player, role, positionOverallConfig),
-        energy: Math.round(player.currentStamina ?? player.stamina ?? 100)
-      };
+      player.assignedRole = role;
+      return player;
     })
-    .filter(Boolean) as LineupPlayer[];
-};
-
-const getQuarterLineup = (
-  roster: EnginePlayer[],
-  quarterIndex: number,
-  tactics?: EngineTactics | null,
-  positionOverallConfig: PositionOverallConfig = FALLBACK_POSITION_OVERALL_CONFIG
-) => {
-  const quarterKey = `q${quarterIndex + 1}` as 'q1' | 'q2' | 'q3' | 'q4';
-  if (tactics && tactics[quarterKey]) {
-    const lineupIds = Object.values(tactics[quarterKey] || {}).filter(Boolean) as number[];
-    const exactLineup = roster.filter((player) => lineupIds.includes(player.id));
-    const uniqueLineup = pickUniqueLineup(exactLineup, positionOverallConfig);
-    if (uniqueLineup.length === 5) return uniqueLineup;
-  }
-  return pickUniqueLineup(roster, positionOverallConfig);
+    .filter(Boolean) as EnginePlayer[];
 };
 
 const pickPlayerByRole = (
   players: EnginePlayer[],
   action: 'shoot' | 'rebound' | 'assist' | 'turnover',
-  excludePlayer?: string
+  opts?: {
+    excludePlayer?: string;
+    offenseStyle?: OffenseStyle;
+    defenseStyle?: DefenseStyle;
+  }
 ) => {
   let available = players;
-  if (excludePlayer) available = players.filter((player) => player.name !== excludePlayer);
+  if (opts?.excludePlayer) available = players.filter((player) => player.name !== opts.excludePlayer);
   if (available.length === 0) return players[0];
 
-  const getPosWeight = (position: string, currentAction: string) => {
+  const getPosWeight = (role: CourtRole, currentAction: string) => {
     if (currentAction === 'shoot') {
-      return position.includes('Base') ? 20 : position.includes('Escolta') || position.includes('Alero') ? 25 : 15;
+      if (role === 'Base') return 20;
+      if (role === 'Escolta' || role === 'Alero') return 25;
+      return 15;
     }
     if (currentAction === 'rebound') {
-      return position.includes('Pívot')
-        ? 35
-        : position.includes('Ala-Pívot')
-          ? 25
-          : position.includes('Alero')
-            ? 15
-            : 10;
+      if (role === 'Pívot') return 35;
+      if (role === 'Ala-Pívot') return 25;
+      if (role === 'Alero') return 15;
+      return 10;
     }
-    if (currentAction === 'assist') return position.includes('Base') ? 40 : position.includes('Escolta') ? 20 : 10;
+    if (currentAction === 'assist') return role === 'Base' ? 40 : role === 'Escolta' ? 20 : 10;
     return 20;
   };
 
   const weights = available.map((player) => {
-    const baseWeight = getPosWeight(player.position, action);
+    const role = getPlayerRole(player);
+    let baseWeight = getPosWeight(role, action);
+
+    if (action === 'shoot') {
+      if (opts?.offenseStyle === 'RUN_AND_GUN') {
+        if (role === 'Base' || role === 'Escolta') baseWeight += 10;
+        if (role === 'Alero') baseWeight += 5;
+        if (role === 'Pívot') baseWeight -= 5;
+      } else if (opts?.offenseStyle === 'PAINT_FOCUS') {
+        if (role === 'Pívot' || role === 'Ala-Pívot') baseWeight += 12;
+        if (role === 'Base' || role === 'Escolta') baseWeight -= 5;
+      }
+    }
+
+    if (action === 'assist' && opts?.offenseStyle === 'RUN_AND_GUN') {
+      if (role === 'Base') baseWeight += 8;
+      if (role === 'Escolta' || role === 'Alero') baseWeight += 3;
+    }
+
+    if (action === 'rebound' && opts?.offenseStyle === 'PAINT_FOCUS') {
+      if (role === 'Pívot' || role === 'Ala-Pívot') baseWeight += 10;
+    }
+
+    if (action === 'turnover' && opts?.defenseStyle === 'PRESSING') {
+      if (role === 'Base' || role === 'Escolta' || role === 'Alero') baseWeight += 10;
+    }
+
     let statModifier = 1;
     if (action === 'shoot') statModifier = 1 + ((player.shooting_2pt + player.shooting_3pt) / 200);
     if (action === 'rebound') statModifier = 1 + (player.rebounding / 100);
     if (action === 'assist') statModifier = 1 + (player.passing / 100);
+    if (action === 'turnover') statModifier = 1 + (player.defense / 100);
     return baseWeight * statModifier;
   });
 
@@ -303,13 +336,14 @@ const drainLineupStamina = (
   lineup: EnginePlayer[],
   possessionSecs: number,
   isAttackingTeam: boolean,
-  settings: MatchSimulatorSettings
+  settings: MatchSimulatorSettings,
+  multiplier = 1
 ) => {
   lineup.forEach((player) => {
-    const role = normalizePosition(player.position);
+    const role = getPlayerRole(player);
     const roleLoad = role === 'Base' ? 1.1 : role === 'Pívot' ? 0.95 : 1;
     const baseDrain = isAttackingTeam ? settings.drainAttackBase : settings.drainDefenseBase;
-    const drain = (baseDrain + possessionSecs * settings.drainPerPossessionSecond) * roleLoad;
+    const drain = (baseDrain + possessionSecs * settings.drainPerPossessionSecond) * roleLoad * multiplier;
     const current = player.currentStamina ?? player.stamina ?? 100;
     player.currentStamina = Math.max(0, current - drain);
   });
@@ -340,15 +374,96 @@ const getTeamStrength = (
   positionOverallConfig: PositionOverallConfig = FALLBACK_POSITION_OVERALL_CONFIG
 ) =>
   lineup.reduce(
-    (acc, player) => acc + calculateRoleRating(player, getBestRoleForPlayer(player, positionOverallConfig), positionOverallConfig),
+    (acc, player) => acc + calculateRoleRating(player, getPlayerRole(player), positionOverallConfig),
     0
   ) / Math.max(1, lineup.length);
+
+const getThreePointAttemptRate = (baseRate: number, offenseStyle: OffenseStyle) => {
+  if (offenseStyle === 'RUN_AND_GUN') return clamp(baseRate + 0.18, 0.05, 0.9);
+  if (offenseStyle === 'PAINT_FOCUS') return clamp(baseRate - 0.18, 0.05, 0.9);
+  return baseRate;
+};
+
+const getAttackDrainMultiplier = (offenseStyle: OffenseStyle) => {
+  if (offenseStyle === 'RUN_AND_GUN') return 1.12;
+  if (offenseStyle === 'PAINT_FOCUS') return 1.05;
+  return 1;
+};
+
+const getDefenseDrainMultiplier = (defenseStyle: DefenseStyle) => {
+  if (defenseStyle === 'PRESSING') return 1.18;
+  if (defenseStyle === 'ZONE_2_3') return 0.97;
+  return 1;
+};
+
+const getShotTacticalModifier = (
+  offenseStyle: OffenseStyle,
+  defenseStyle: DefenseStyle,
+  isThreePointer: boolean,
+  attackerRole: CourtRole
+) => {
+  let modifier = 0;
+
+  if (offenseStyle === 'RUN_AND_GUN') {
+    modifier += isThreePointer ? 6 : -3;
+    if (attackerRole === 'Base' || attackerRole === 'Escolta' || attackerRole === 'Alero') modifier += 1.5;
+  } else if (offenseStyle === 'PAINT_FOCUS') {
+    modifier += isThreePointer ? -5 : 5;
+    if (attackerRole === 'Pívot' || attackerRole === 'Ala-Pívot') modifier += 2;
+  }
+
+  if (defenseStyle === 'ZONE_2_3') {
+    modifier += isThreePointer ? 4 : -5;
+  } else if (defenseStyle === 'PRESSING') {
+    modifier += isThreePointer ? -1 : -2;
+  }
+
+  return modifier;
+};
+
+const getTurnoverTacticalModifier = (
+  offenseStyle: OffenseStyle,
+  defenseStyle: DefenseStyle,
+  attackerRole: CourtRole,
+  defenderRole: CourtRole
+) => {
+  let modifier = 0;
+
+  if (offenseStyle === 'RUN_AND_GUN') modifier += 3;
+  if (offenseStyle === 'PAINT_FOCUS') modifier -= 1;
+
+  if (defenseStyle === 'PRESSING') {
+    modifier += 6;
+    if (defenderRole === 'Base' || defenderRole === 'Escolta' || defenderRole === 'Alero') modifier += 2;
+  } else if (defenseStyle === 'ZONE_2_3') {
+    modifier -= 1;
+  }
+
+  if (attackerRole === 'Base' && defenseStyle === 'PRESSING') modifier += 1;
+
+  return modifier;
+};
+
+const getOffensiveReboundRate = (
+  baseRate: number,
+  offenseStyle: OffenseStyle,
+  defenseStyle: DefenseStyle
+) => {
+  let modifier = 0;
+  if (offenseStyle === 'PAINT_FOCUS') modifier += 0.08;
+  if (offenseStyle === 'RUN_AND_GUN') modifier -= 0.03;
+  if (defenseStyle === 'ZONE_2_3') modifier -= 0.04;
+  if (defenseStyle === 'PRESSING') modifier += 0.02;
+  return clamp(baseRate + modifier, 0.05, 0.7);
+};
 
 export const generateMatchSimulation = ({
   homeRoster,
   awayRoster,
   homeTactics,
   awayTactics,
+  homeGamePlan,
+  awayGamePlan,
   homeTeamName = 'Local',
   awayTeamName = 'Visitante',
   homeTeamColor = '#3b82f6',
@@ -360,6 +475,16 @@ export const generateMatchSimulation = ({
   const ratingConfig = normalizePositionOverallConfig(positionOverallConfig);
   const simHomeRoster = homeRoster.map((player) => ({ ...player, currentStamina: player.stamina || 100 }));
   const simAwayRoster = awayRoster.map((player) => ({ ...player, currentStamina: player.stamina || 100 }));
+  const homePlan = {
+    rotations: homeGamePlan?.rotations ?? homeTactics,
+    offenseStyle: normalizeOffenseStyle(homeGamePlan?.offenseStyle),
+    defenseStyle: normalizeDefenseStyle(homeGamePlan?.defenseStyle)
+  };
+  const awayPlan = {
+    rotations: awayGamePlan?.rotations ?? awayTactics,
+    offenseStyle: normalizeOffenseStyle(awayGamePlan?.offenseStyle),
+    defenseStyle: normalizeDefenseStyle(awayGamePlan?.defenseStyle)
+  };
 
   const events: MatchEvent[] = [];
   const quarters = ['Q1', 'Q2', 'Q3', 'Q4'];
@@ -389,14 +514,17 @@ export const generateMatchSimulation = ({
       });
     }
 
-    const homeStarters = getQuarterLineup(simHomeRoster, q, homeTactics, ratingConfig);
-    const awayStarters = getQuarterLineup(simAwayRoster, q, awayTactics, ratingConfig);
+    clearAssignedRoles(simHomeRoster);
+    clearAssignedRoles(simAwayRoster);
+
+    const homeStarters = getQuarterLineup(simHomeRoster, q, homePlan.rotations, ratingConfig);
+    const awayStarters = getQuarterLineup(simAwayRoster, q, awayPlan.rotations, ratingConfig);
     prevHomeOnCourt = new Set(homeStarters.map((player) => player.id));
     prevAwayOnCourt = new Set(awayStarters.map((player) => player.id));
 
     const getCurrentStates = () => ({
-      home: getQuarterLineupState(simHomeRoster, q, homeTactics, ratingConfig),
-      away: getQuarterLineupState(simAwayRoster, q, awayTactics, ratingConfig)
+      home: toLineupState(homeStarters, ratingConfig),
+      away: toLineupState(awayStarters, ratingConfig)
     });
 
     const currentStates = getCurrentStates();
@@ -413,7 +541,10 @@ export const generateMatchSimulation = ({
       type: 'info',
       isHomeAction: true,
       teamColor: homeTeamColor,
-      text: `Inicio ${quarters[q]}\n${homeTeamName}: ${formatLineupSummary(currentStates.home)}\n${awayTeamName}: ${formatLineupSummary(currentStates.away)}`,
+      text:
+        `Inicio ${quarters[q]}\n` +
+        `${homeTeamName} (${formatGamePlanSummary(homePlan.offenseStyle, homePlan.defenseStyle)}): ${formatLineupSummary(currentStates.home)}\n` +
+        `${awayTeamName} (${formatGamePlanSummary(awayPlan.offenseStyle, awayPlan.defenseStyle)}): ${formatLineupSummary(currentStates.away)}`,
       homeLineup: currentStates.home,
       awayLineup: currentStates.away
     });
@@ -427,11 +558,13 @@ export const generateMatchSimulation = ({
       const attackers = isHomeAttacking ? homeStarters : awayStarters;
       const defenders = isHomeAttacking ? awayStarters : homeStarters;
       const attackColor = isHomeAttacking ? homeTeamColor : awayTeamColor;
+      const attackingPlan = isHomeAttacking ? homePlan : awayPlan;
+      const defendingPlan = isHomeAttacking ? awayPlan : homePlan;
       const homeOnCourtIds = new Set(homeStarters.map((player) => player.id));
       const awayOnCourtIds = new Set(awayStarters.map((player) => player.id));
 
-      drainLineupStamina(attackers, possessionSecs, true, cfg);
-      drainLineupStamina(defenders, possessionSecs, false, cfg);
+      drainLineupStamina(attackers, possessionSecs, true, cfg, getAttackDrainMultiplier(attackingPlan.offenseStyle));
+      drainLineupStamina(defenders, possessionSecs, false, cfg, getDefenseDrainMultiplier(defendingPlan.defenseStyle));
       recoverBenchStamina(simHomeRoster, homeOnCourtIds, cfg);
       recoverBenchStamina(simAwayRoster, awayOnCourtIds, cfg);
 
@@ -439,8 +572,8 @@ export const generateMatchSimulation = ({
       lastHomeLineupState = updatedStates.home;
       lastAwayLineupState = updatedStates.away;
 
-      const attacker = pickPlayerByRole(attackers, 'shoot');
-      const defender = pickPlayerByRole(defenders, 'turnover');
+      const attacker = pickPlayerByRole(attackers, 'shoot', { offenseStyle: attackingPlan.offenseStyle });
+      const defender = pickPlayerByRole(defenders, 'turnover', { defenseStyle: defendingPlan.defenseStyle });
 
       const eventObj: MatchEvent = {
         quarter: quarters[q],
@@ -458,12 +591,13 @@ export const generateMatchSimulation = ({
         awayLineup: updatedStates.away
       };
 
-      const isThreePointer = Math.random() < cfg.threePointAttemptRate;
+      const attackerRole = getPlayerRole(attacker);
+      const defenderRole = getPlayerRole(defender);
+      const isThreePointer =
+        Math.random() < getThreePointAttemptRate(cfg.threePointAttemptRate, attackingPlan.offenseStyle);
       const baseChance = isThreePointer ? cfg.baseThreePointChance : cfg.baseTwoPointChance;
       const attackerEnergy = attacker.currentStamina ?? 100;
       const defenderEnergy = defender.currentStamina ?? 100;
-      const attackerRole = normalizePosition(attacker.position);
-      const defenderRole = normalizePosition(defender.position);
       const attackerRating = calculateRoleRating(attacker, attackerRole, ratingConfig);
       const defenderRating = calculateRoleRating(defender, defenderRole, ratingConfig);
       const averageDuelRating = (attackerRating + defenderRating) / 2;
@@ -473,7 +607,12 @@ export const generateMatchSimulation = ({
       const defenseShotImpact = (defenderEnergy - 70) * cfg.shotDefenderEnergyImpact;
       const skillImpact = (attackerRating - defenderRating) * cfg.shotSkillImpact;
       const shotChance = clamp(
-        baseChance + energyShotImpact - defenseShotImpact + skillImpact + averageDuelShotImpact,
+        baseChance +
+          energyShotImpact -
+          defenseShotImpact +
+          skillImpact +
+          averageDuelShotImpact +
+          getShotTacticalModifier(attackingPlan.offenseStyle, defendingPlan.defenseStyle, isThreePointer, attackerRole),
         cfg.shotChanceMin,
         cfg.shotChanceMax
       );
@@ -481,7 +620,8 @@ export const generateMatchSimulation = ({
         cfg.turnoverBaseChance +
           Math.max(0, 60 - attackerEnergy) * cfg.turnoverLowEnergyImpact +
           Math.max(0, defenderEnergy - 65) * cfg.turnoverDefenseEnergyImpact +
-          averageDuelTurnoverImpact,
+          averageDuelTurnoverImpact +
+          getTurnoverTacticalModifier(attackingPlan.offenseStyle, defendingPlan.defenseStyle, attackerRole, defenderRole),
         cfg.turnoverChanceMin,
         cfg.turnoverChanceMax
       );
@@ -501,7 +641,10 @@ export const generateMatchSimulation = ({
         eventObj.type = 'basket';
         eventObj.points = points;
         if (Math.random() < cfg.assistRate) {
-          const assister = pickPlayerByRole(attackers, 'assist', attacker.name);
+          const assister = pickPlayerByRole(attackers, 'assist', {
+            offenseStyle: attackingPlan.offenseStyle,
+            excludePlayer: attacker.name
+          });
           eventObj.assister = assister.name;
           eventObj.text = `${attacker.name} anota de ${points} puntos (asistencia de ${assister.name}).`;
         } else {
@@ -509,9 +652,19 @@ export const generateMatchSimulation = ({
         }
       } else {
         eventObj.type = 'fail';
-        const reboundTeamIsHome = Math.random() < cfg.offensiveReboundRate ? isHomeAttacking : !isHomeAttacking;
+        const reboundTeamIsHome =
+          Math.random() <
+          getOffensiveReboundRate(
+            cfg.offensiveReboundRate,
+            attackingPlan.offenseStyle,
+            defendingPlan.defenseStyle
+          )
+            ? isHomeAttacking
+            : !isHomeAttacking;
         const reboundPool = reboundTeamIsHome ? homeStarters : awayStarters;
-        const rebounder = pickPlayerByRole(reboundPool, 'rebound');
+        const rebounder = pickPlayerByRole(reboundPool, 'rebound', {
+          offenseStyle: reboundTeamIsHome ? homePlan.offenseStyle : awayPlan.offenseStyle
+        });
         eventObj.rebounder = rebounder.name;
         eventObj.text = `${attacker.name} falla el tiro. Rebote de ${rebounder.name}.`;
       }

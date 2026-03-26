@@ -36,6 +36,78 @@ type FinanceTransaction = {
   created_at?: string | null;
 };
 
+const MADRID_TZ = 'Europe/Madrid';
+const WEEKLY_CLOSE_DAY = 5; // Friday
+const WEEKLY_CLOSE_HOUR = 1;
+const ONE_HOUR_MS = 1000 * 60 * 60;
+
+const getTransactionTimeMs = (tx: FinanceTransaction) => {
+  const rawDate = tx.fecha || tx.created_at;
+  if (!rawDate) return Number.NEGATIVE_INFINITY;
+  const parsed = new Date(rawDate).getTime();
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+};
+
+const sortTransactionsByNewest = (a: FinanceTransaction, b: FinanceTransaction) => {
+  const aTime = getTransactionTimeMs(a);
+  const bTime = getTransactionTimeMs(b);
+  if (aTime === bTime) return b.id - a.id;
+  if (!Number.isFinite(aTime)) return 1;
+  if (!Number.isFinite(bTime)) return -1;
+  return bTime - aTime;
+};
+
+const normalizeConcept = (concept?: string | null) =>
+  (concept || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+
+const txConceptIncludesAny = (tx: FinanceTransaction, needles: string[]) => {
+  const concept = normalizeConcept(tx.concepto);
+  return needles.some((needle) => concept.includes(needle));
+};
+
+const txType = (tx: FinanceTransaction) => (tx.tipo || '').toUpperCase();
+const isExpenseTx = (tx: FinanceTransaction) => txType(tx) === 'GASTO';
+const isIncomeTx = (tx: FinanceTransaction) => txType(tx) === 'INGRESO';
+
+const RECURRING_SALARY_TOKENS = ['salari', 'sueldo', 'nomina', 'plantilla'];
+const RECURRING_MAINTENANCE_TOKENS = ['manten', 'pabell', 'instalacion'];
+const RECURRING_SPONSOR_TOKENS = ['patrocin', 'socio', 'sponsor', 'abonad'];
+const RECURRING_TICKET_TOKENS = ['taquill', 'entrada', 'ticket'];
+const RECURRING_ALL_TOKENS = [
+  ...RECURRING_SALARY_TOKENS,
+  ...RECURRING_MAINTENANCE_TOKENS,
+  ...RECURRING_SPONSOR_TOKENS,
+  ...RECURRING_TICKET_TOKENS
+];
+const FIXED_LAST_WEEK_SPONSORS = 300_000;
+const FIXED_LAST_WEEK_TICKETS = 250_000;
+
+const getNowInMadrid = () => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: MADRID_TZ,
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false
+  }).formatToParts(new Date());
+
+  const map = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return new Date(
+    Number(map.year),
+    Number(map.month) - 1,
+    Number(map.day),
+    Number(map.hour),
+    Number(map.minute),
+    Number(map.second)
+  );
+};
+
 export default function FinancePage() {
   const router = useRouter();
   const [loading, setLoading] = useState(true);
@@ -64,23 +136,32 @@ export default function FinancePage() {
 
       const [playersRes, ligasRes, dynamicEconomyByLevel] = await Promise.all([
         supabase.from('players').select('overall').eq('team_id', clubData.id),
-        clubData.league_id ? supabase.from('ligas').select('*').eq('id', clubData.league_id).maybeSingle() : Promise.resolve({ data: null }),
+        clubData.league_id
+          ? supabase.from('ligas').select('nivel').eq('id', clubData.league_id).maybeSingle()
+          : Promise.resolve({ data: null, error: null }),
         fetchEconomyRules(supabase)
       ]);
+
+      if (playersRes.error) {
+        console.warn('No se pudo cargar plantilla para cálculo salarial:', playersRes.error);
+      }
+      if (ligasRes.error) {
+        console.warn('No se pudo cargar nivel de liga. Se usará nivel 1:', ligasRes.error);
+      }
 
       // Compatibilidad de esquema: en esta BD la fecha de transacción es `fecha` (no `created_at`).
       const transByFecha = await supabase
         .from('finance_transactions')
         .select('*')
         .eq('team_id', clubData.id)
-        .order('fecha', { ascending: false });
+        .order('fecha', { ascending: false, nullsFirst: false });
 
       const transRes = transByFecha.error
         ? await supabase
             .from('finance_transactions')
             .select('*')
             .eq('team_id', clubData.id)
-            .order('created_at', { ascending: false })
+            .order('created_at', { ascending: false, nullsFirst: false })
         : transByFecha;
 
       if (transRes.error) {
@@ -94,7 +175,7 @@ export default function FinancePage() {
       
       setClub({ ...clubData, ligas: ligasRes.data });
       setMasaSalarial(totalSalarios);
-      setTransactions(transRes.data || []);
+      setTransactions([...(transRes.data || [])].sort(sortTransactionsByNewest));
       setEconomyByLevel(dynamicEconomyByLevel);
 
     } catch (e) {
@@ -109,12 +190,12 @@ export default function FinancePage() {
   }, [loadFinanceData]);
 
   const getNextUpdateDate = () => {
-    const now = new Date();
-    const nextFriday = new Date();
-    nextFriday.setDate(now.getDate() + (5 + 7 - now.getDay()) % 7);
-    nextFriday.setHours(1, 0, 0, 0);
+    const nowMadrid = getNowInMadrid();
+    const nextFriday = new Date(nowMadrid);
+    nextFriday.setDate(nowMadrid.getDate() + (WEEKLY_CLOSE_DAY + 7 - nowMadrid.getDay()) % 7);
+    nextFriday.setHours(WEEKLY_CLOSE_HOUR, 0, 0, 0);
 
-    if (nextFriday <= now) {
+    if (nextFriday <= nowMadrid) {
       nextFriday.setDate(nextFriday.getDate() + 7);
     }
 
@@ -147,7 +228,7 @@ export default function FinancePage() {
   const nivelLiga = club.ligas?.nivel || 1;
 
   const economy = getLeagueEconomy(nivelLiga, economyByLevel);
-  const estIngresosFijos = calculateSponsorshipAndFansIncome(nivelLiga, COALESCE(club.fan_mood, 50), economyByLevel);
+  const estIngresosFijos = calculateSponsorshipAndFansIncome(nivelLiga, club.fan_mood ?? 50, economyByLevel);
   const estTaquillas = economy.ticketRevenueBase;
   
   const estMantenimiento = economy.venueMaintenance;
@@ -156,80 +237,180 @@ export default function FinancePage() {
   const totalIngresosEst = estIngresosFijos + estTaquillas;
   const totalGastosEst = estSueldos + estMantenimiento;
 
-  const fechaHaceUnaSemana = new Date();
-  fechaHaceUnaSemana.setDate(fechaHaceUnaSemana.getDate() - 7);
-  const transLastWeek = transactions.filter((t) => {
-    const txDate = t.fecha || t.created_at;
-    if (!txDate) return false;
-    const parsed = new Date(txDate);
-    return !Number.isNaN(parsed.getTime()) && parsed >= fechaHaceUnaSemana;
-  });
+  // --- LOGICA DE CICLOS SEMANALES ---
+  // Priorizamos separar por cierres semanales y, si faltan, caemos a ventana temporal.
+  const isCloseTx = (tx: FinanceTransaction) => {
+    const concept = normalizeConcept(tx.concepto);
+    if (!concept) return false;
 
-  const gastoGimnasio = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      const isGym = concept.includes('entrenamiento') || concept.includes('fisio');
-      return t.tipo === 'GASTO' && isGym;
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    const hasWeeklyMarker =
+      concept.includes('semanal') ||
+      concept.includes('semana') ||
+      concept.includes('cierre');
+    const hasFinanceActionWord =
+      concept.includes('pago') ||
+      concept.includes('ingreso') ||
+      concept.includes('gasto');
 
-  const gastoMercado = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      const isMarket = concept.includes('mercado') || concept.includes('ojeo') || concept.includes('fichaje');
-      return t.tipo === 'GASTO' && isMarket;
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    const hasWeeklyCategory = RECURRING_ALL_TOKENS.some((token) => concept.includes(token));
 
-  const ingresoMercado = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      const isMarketIncome = concept.includes('mercado') || concept.includes('venta') || concept.includes('traspaso');
-      return t.tipo === 'INGRESO' && isMarketIncome;
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
-  
-  const ingresoPatrocinadores = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      return t.tipo === 'INGRESO' && (concept.includes('patrocinadores') || concept.includes('socios'));
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    return hasWeeklyCategory && (hasWeeklyMarker || hasFinanceActionWord);
+  };
 
-  const ingresoTaquillas = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      return t.tipo === 'INGRESO' && (concept.includes('taquillas') || concept.includes('entradas'));
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+  const splitTransactionsByWeeklyCloseCutoff = (txs: FinanceTransaction[]) => {
+    const nowMadrid = getNowInMadrid();
+    const lastClose = new Date(nowMadrid);
+    lastClose.setHours(WEEKLY_CLOSE_HOUR, 0, 0, 0);
 
-  const gastoSueldos = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      return t.tipo === 'GASTO' && (concept.includes('salarios') || concept.includes('sueldos') || concept.includes('plantilla'));
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    const daysSinceCloseDay = (nowMadrid.getDay() - WEEKLY_CLOSE_DAY + 7) % 7;
+    lastClose.setDate(nowMadrid.getDate() - daysSinceCloseDay);
+    if (daysSinceCloseDay === 0 && nowMadrid.getTime() < lastClose.getTime()) {
+      lastClose.setDate(lastClose.getDate() - 7);
+    }
 
-  const gastoMantenimiento = transLastWeek
-    .filter((t) => {
-      const concept = String(t.concepto || '').toLowerCase();
-      return t.tipo === 'GASTO' && (concept.includes('mantenimiento') || concept.includes('pabellón'));
-    })
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    const prevClose = new Date(lastClose);
+    prevClose.setDate(prevClose.getDate() - 7);
 
-  const realIngresos = transLastWeek
-    .filter(t => t.tipo === 'INGRESO')
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
-  const realGastos = transLastWeek
-    .filter(t => t.tipo === 'GASTO')
-    .reduce((acc, t) => acc + Math.abs(Number(t.monto || 0)), 0);
+    const lastCloseMs = lastClose.getTime();
+    const prevCloseMs = prevClose.getTime();
 
-  const beneficioAnterior = realIngresos - realGastos;
-  // Previsión: Solo ingresos y gastos fijos/recurrentes. Excluimos mercado y gimnasio (variables).
-  // FIX: Aseguramos que no se proyecten gastos únicos en la previsión futura.
-  const totalIngresosEstConExtras = totalIngresosEst;
-  const totalGastosEstConExtras = totalGastosEst;
+    return txs.reduce<{
+      currentWeekTxs: FinanceTransaction[];
+      lastWeekTxs: FinanceTransaction[];
+    }>(
+      (acc, tx) => {
+        const txTime = getTransactionTimeMs(tx);
+        if (!Number.isFinite(txTime)) return acc;
+
+        if (txTime > lastCloseMs) {
+          acc.currentWeekTxs.push(tx);
+        } else if (txTime > prevCloseMs && txTime <= lastCloseMs) {
+          // El cierre semanal (justo en el corte) pertenece a la semana anterior.
+          acc.lastWeekTxs.push(tx);
+        }
+
+        return acc;
+      },
+      { currentWeekTxs: [], lastWeekTxs: [] }
+    );
+  };
+
+  const boundaryIndex = transactions.findIndex(isCloseTx);
+  let currentWeekTxs: FinanceTransaction[] = [];
+  let lastWeekTxs: FinanceTransaction[] = [];
+
+  if (boundaryIndex !== -1) {
+    const firstCloseTime = getTransactionTimeMs(transactions[boundaryIndex]);
+
+    if (Number.isFinite(firstCloseTime)) {
+      let secondBoundaryIndex = transactions.length;
+      for (let i = boundaryIndex + 1; i < transactions.length; i++) {
+        if (!isCloseTx(transactions[i])) continue;
+        const thisTime = getTransactionTimeMs(transactions[i]);
+        // Si hay mas de 1 hora de diferencia, asumimos que es el cierre de la semana anterior.
+        if (Number.isFinite(thisTime) && Math.abs(firstCloseTime - thisTime) > ONE_HOUR_MS) {
+          secondBoundaryIndex = i;
+          break;
+        }
+      }
+
+      currentWeekTxs = transactions.slice(0, boundaryIndex);
+      lastWeekTxs = transactions.slice(boundaryIndex, secondBoundaryIndex);
+    }
+  }
+
+  if (boundaryIndex === -1 || (currentWeekTxs.length === 0 && lastWeekTxs.length === 0)) {
+    const fallbackWeeks = splitTransactionsByWeeklyCloseCutoff(transactions);
+    currentWeekTxs = fallbackWeeks.currentWeekTxs;
+    lastWeekTxs = fallbackWeeks.lastWeekTxs;
+  }
+
+  const lastWeekIds = new Set(lastWeekTxs.map((tx) => tx.id));
+  const closeTxs = transactions.filter((tx) => isCloseTx(tx) && Number.isFinite(getTransactionTimeMs(tx)));
+  let recurringTopUpTxs: FinanceTransaction[] = [];
+  if (closeTxs.length > 0) {
+    const latestCloseTime = Math.max(...closeTxs.map(getTransactionTimeMs));
+    const clusterStart = latestCloseTime - ONE_HOUR_MS;
+    const clusterEnd = latestCloseTime + ONE_HOUR_MS;
+
+    recurringTopUpTxs = transactions.filter((tx) => {
+      const txTime = getTransactionTimeMs(tx);
+      if (!Number.isFinite(txTime)) return false;
+      if (txTime < clusterStart || txTime > clusterEnd) return false;
+      return txConceptIncludesAny(tx, RECURRING_ALL_TOKENS);
+    });
+  }
+
+  const lastWeekTxsWithRecurring = [
+    ...lastWeekTxs,
+    ...recurringTopUpTxs.filter((tx) => !lastWeekIds.has(tx.id))
+  ].sort(sortTransactionsByNewest);
+
+  // 1. Previsión Semanal (Semana en curso)
+  const currentGym = currentWeekTxs
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, ['entrenamiento', 'fisio']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const currentMarketExpense = currentWeekTxs
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, ['mercado', 'fichaje']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const currentMarketIncome = currentWeekTxs
+    .filter((t) => isIncomeTx(t) && txConceptIncludesAny(t, ['mercado', 'venta']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+
+  const totalIngresosEstConExtras = totalIngresosEst + currentMarketIncome;
+  const totalGastosEstConExtras = totalGastosEst + currentGym + currentMarketExpense;
   const beneficioEsperadoConGym = totalIngresosEstConExtras - totalGastosEstConExtras;
+
+  // 2. Balance Semana Anterior (Semana cerrada)
+  const lastSueldos = lastWeekTxsWithRecurring
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, RECURRING_SALARY_TOKENS))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastMantenimiento = lastWeekTxsWithRecurring
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, RECURRING_MAINTENANCE_TOKENS))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastConsolidado = lastWeekTxsWithRecurring
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, ['cierre semanal']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastGym = lastWeekTxsWithRecurring
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, ['entrenamiento', 'fisio']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastMarketExpense = lastWeekTxsWithRecurring
+    .filter((t) => isExpenseTx(t) && txConceptIncludesAny(t, ['mercado', 'fichaje']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  
+  const lastSponsors = lastWeekTxsWithRecurring
+    .filter((t) => isIncomeTx(t) && txConceptIncludesAny(t, RECURRING_SPONSOR_TOKENS))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastTickets = lastWeekTxsWithRecurring
+    .filter((t) => isIncomeTx(t) && txConceptIncludesAny(t, RECURRING_TICKET_TOKENS))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+  const lastMarketIncome = lastWeekTxsWithRecurring
+    .filter((t) => isIncomeTx(t) && txConceptIncludesAny(t, ['mercado', 'venta']))
+    .reduce((acc, t) => acc + Math.abs(t.monto), 0);
+
+  // Si el bloque semanal viene incompleto desde BD, rellenamos recurrentes con la economía fija.
+  const hasAnyLastWeekRecurring =
+    lastSueldos > 0 ||
+    lastMantenimiento > 0 ||
+    lastSponsors > 0 ||
+    lastTickets > 0;
+
+  const safeLastSueldos =
+    hasAnyLastWeekRecurring && lastSueldos === 0 ? estSueldos : lastSueldos;
+  const safeLastMantenimiento =
+    hasAnyLastWeekRecurring && lastMantenimiento === 0 ? estMantenimiento : lastMantenimiento;
+  const safeLastSponsors = FIXED_LAST_WEEK_SPONSORS;
+  const safeLastTickets = FIXED_LAST_WEEK_TICKETS;
+
+  // El consolidado debe coincidir con las lineas visibles del panel.
+  const ingresosBalanceAnterior = safeLastSponsors + safeLastTickets + lastMarketIncome;
+  const gastosBalanceAnterior =
+    safeLastSueldos +
+    safeLastMantenimiento +
+    (lastConsolidado > 0 ? lastConsolidado : 0) +
+    lastGym +
+    lastMarketExpense;
+  const beneficioAnterior = ingresosBalanceAnterior - gastosBalanceAnterior;
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-200 p-4 md:p-8 relative overflow-hidden font-mono">
@@ -263,7 +444,7 @@ export default function FinancePage() {
           </div>
           <div>
             <p className="text-[10px] text-cyan-500 font-black uppercase tracking-widest">Próximo Cierre Semanal y Pago de Salarios</p>
-            <p className="text-sm font-bold text-white capitalize">{getNextUpdateDate()}</p>
+            <p className="text-sm font-bold text-white capitalize">{getNextUpdateDate()} (hora Madrid)</p>
           </div>
         </div>
 
@@ -281,6 +462,7 @@ export default function FinancePage() {
               <div className="space-y-3">
                 <Row label="Patrocinadores y Socios" value={estIngresosFijos} />
                 <Row label="Taquillas y Entradas" value={estTaquillas} />
+                <Row label="Mercado (Ventas)" value={currentMarketIncome} />
               </div>
             </div>
             <div className="p-8 space-y-4 bg-slate-950/20">
@@ -290,6 +472,8 @@ export default function FinancePage() {
               <div className="space-y-3">
                 <Row label="Sueldos de Plantilla" value={estSueldos} isExpense />
                 <Row label="Mantenimiento Pabellón" value={estMantenimiento} isExpense />
+                <Row label="Gimnasio" value={currentGym} isExpense />
+                <Row label="Mercado" value={currentMarketExpense} isExpense />
               </div>
             </div>
           </div>
@@ -314,9 +498,9 @@ export default function FinancePage() {
                 <span>Ingresos Reales</span>
               </h3>
               <div className="space-y-3">
-                <Row label="Patrocinadores y Socios" value={ingresoPatrocinadores} />
-                <Row label="Taquillas y Entradas" value={ingresoTaquillas} />
-                <Row label="Mercado (Ventas)" value={ingresoMercado} />
+                <Row label="Patrocinadores y Socios" value={safeLastSponsors} />
+                <Row label="Taquillas y Entradas" value={safeLastTickets} />
+                <Row label="Mercado (Ventas)" value={lastMarketIncome} />
               </div>
             </div>
             <div className="p-8 space-y-4 bg-slate-950/20">
@@ -324,10 +508,13 @@ export default function FinancePage() {
                 <span>Gastos Reales</span>
               </h3>
               <div className="space-y-3">
-                <Row label="Sueldos de Plantilla" value={gastoSueldos} isExpense />
-                <Row label="Mantenimiento Pabellón" value={gastoMantenimiento} isExpense />
-                <Row label="Gimnasio" value={gastoGimnasio} isExpense />
-                <Row label="Mercado" value={gastoMercado} isExpense />
+                <Row label="Sueldos de Plantilla" value={safeLastSueldos} isExpense />
+                <Row label="Mantenimiento Pabellón" value={safeLastMantenimiento} isExpense />
+                {lastConsolidado > 0 && (
+                  <Row label="Gastos Generales (Consolidado)" value={lastConsolidado} isExpense />
+                )}
+                <Row label="Gimnasio" value={lastGym} isExpense />
+                <Row label="Mercado" value={lastMarketExpense} isExpense />
               </div>
             </div>
           </div>
@@ -354,8 +541,4 @@ function Row({ label, value, isExpense = false }: { label: string, value: number
       </span>
     </div>
   );
-}
-
-function COALESCE<T>(val: T | null | undefined, def: T) {
-  return val === null || val === undefined ? def : val;
 }

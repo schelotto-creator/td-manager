@@ -11,6 +11,7 @@ import {
   type LineupPlayer,
   type MatchSimulationResult,
   type MatchEvent,
+  type TeamGamePlan,
   generateMatchSimulation
 } from '@/lib/match-engine';
 import {
@@ -34,6 +35,8 @@ type TeamRow = {
   escudo_forma?: EscudoForma | null;
   escudo_url?: string | null;
   rotations?: unknown;
+  tactic_offense?: string | null;
+  tactic_defense?: string | null;
   pj?: number | null;
   v?: number | null;
   d?: number | null;
@@ -53,6 +56,7 @@ type MatchRow = {
   home_tactics?: unknown;
   away_tactics?: unknown;
   play_by_play?: unknown;
+  simulated_play_by_play?: unknown;
 };
 
 type RawPlayerRow = {
@@ -93,6 +97,14 @@ const parseMatchId = (raw: string | null) => {
   if (!raw) return null;
   const n = Number(raw);
   return Number.isFinite(n) ? n : null;
+};
+
+const hasReachedOfficialTipoff = (matchDate?: string | null, reference = new Date()) => {
+  if (!matchDate) return true;
+  const parsed = new Date(matchDate);
+  const time = parsed.getTime();
+  if (!Number.isFinite(time)) return false;
+  return time <= reference.getTime();
 };
 
 const formatClockFromSeconds = (totalSeconds: number) => {
@@ -151,6 +163,34 @@ const buildPartialsFromEvents = (events: MatchEvent[]) => {
     };
   });
   return partials;
+};
+
+const getReplayEventsForDisplay = (match: MatchRow, reference = new Date()) => {
+  const officialReplay = toReplayEvents(match.play_by_play);
+  if (officialReplay.length > 0) return officialReplay;
+
+  if (match.played || hasReachedOfficialTipoff(match.match_date, reference)) {
+    return toReplayEvents(match.simulated_play_by_play);
+  }
+
+  return [] as MatchEvent[];
+};
+
+const buildReplaySnapshot = (match: MatchRow, quarterDurationSeconds: number, reference = new Date()) => {
+  const replayEvents = getReplayEventsForDisplay(match, reference);
+  const replayPartials = replayEvents.length > 0 ? buildPartialsFromEvents(replayEvents) : [...DEFAULT_PARTIALS];
+  const firstEvent = replayEvents[0];
+
+  return {
+    replayEvents,
+    replayPartials,
+    homeLineup: firstEvent?.homeLineup || [],
+    awayLineup: firstEvent?.awayLineup || [],
+    homeScore: match.played && replayEvents.length === 0 ? Number(match.home_score || 0) : 0,
+    awayScore: match.played && replayEvents.length === 0 ? Number(match.away_score || 0) : 0,
+    displayedQuarter: 'Q1',
+    displayedTime: formatClockFromSeconds(quarterDurationSeconds)
+  };
 };
 
 type TeamSide = 'home' | 'away';
@@ -479,10 +519,10 @@ const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
   forma: Number(player.forma || 80)
 });
 
-const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unknown): EngineTactics | undefined => {
-  const candidate = isRecord(matchTactics)
-    ? (isRecord(matchTactics.rotations) ? matchTactics.rotations : matchTactics)
-    : fallbackRotations;
+const extractTacticsRotations = (source: unknown): EngineTactics | undefined => {
+  const candidate = isRecord(source)
+    ? (isRecord(source.rotations) ? source.rotations : source)
+    : source;
 
   if (!isRecord(candidate)) return undefined;
   const result: EngineTactics = {};
@@ -502,6 +542,28 @@ const extractTacticsRotations = (matchTactics: unknown, fallbackRotations: unkno
   });
 
   return Object.keys(result).length > 0 ? result : undefined;
+};
+
+const extractTeamGamePlan = (matchTactics: unknown, fallbackTeam?: TeamRow | null): TeamGamePlan => {
+  const rotations =
+    extractTacticsRotations(matchTactics) ||
+    extractTacticsRotations(fallbackTeam?.rotations);
+
+  const offenseStyle =
+    isRecord(matchTactics) && typeof matchTactics.offense === 'string'
+      ? matchTactics.offense
+      : fallbackTeam?.tactic_offense || undefined;
+
+  const defenseStyle =
+    isRecord(matchTactics) && typeof matchTactics.defense === 'string'
+      ? matchTactics.defense
+      : fallbackTeam?.tactic_defense || undefined;
+
+  return {
+    rotations,
+    offenseStyle,
+    defenseStyle
+  };
 };
 
 const toReplayEvents = (raw: unknown): MatchEvent[] => {
@@ -692,6 +754,7 @@ function MatchEnginePageContent() {
 
   const canGenerateSimulation = Boolean(currentMatch && !currentMatch.played && userInCurrentMatch);
   const waitingAutoSimulation = Boolean(currentMatch && !currentMatch.played && matchEvents.length === 0);
+  const replayReadyBeforeFinalization = Boolean(currentMatch && !currentMatch.played && matchEvents.length > 0);
   const scheduledKickoffLabel = useMemo(() => {
     if (!currentMatch?.match_date) return null;
     const parsed = new Date(currentMatch.match_date);
@@ -814,23 +877,28 @@ function MatchEnginePageContent() {
         setHomeRoster(homePlayers.map(toEnginePlayer));
         setAwayRoster(awayPlayers.map(toEnginePlayer));
 
-        const homeTx = extractTacticsRotations(matchData.home_tactics, home.rotations);
-        const awayTx = extractTacticsRotations(matchData.away_tactics, away.rotations);
-        setHomeTactics(homeTx);
-        setAwayTactics(awayTx);
+        const homeGamePlan = extractTeamGamePlan(matchData.home_tactics, home);
+        const awayGamePlan = extractTeamGamePlan(matchData.away_tactics, away);
+        setHomeTactics(homeGamePlan.rotations || undefined);
+        setAwayTactics(awayGamePlan.rotations || undefined);
 
-        const replayEvents = toReplayEvents(matchData.play_by_play);
-        if (replayEvents.length > 0) {
-          setMatchEvents(replayEvents);
-          const replayPartials = buildPartialsFromEvents(replayEvents);
-          finalPartialsRef.current = replayPartials;
-          const first = replayEvents[0];
-          if (first.homeLineup.length > 0) setDisplayedHomeLineup(first.homeLineup);
-          if (first.awayLineup.length > 0) setDisplayedAwayLineup(first.awayLineup);
+        const replaySnapshot = buildReplaySnapshot(matchData, loadedSettings.quarterDurationSeconds);
+        setMatchEvents(replaySnapshot.replayEvents);
+        finalPartialsRef.current = replaySnapshot.replayPartials;
+        setDisplayedPartials(replaySnapshot.replayPartials);
+        setDisplayedHomeLineup(replaySnapshot.homeLineup);
+        setDisplayedAwayLineup(replaySnapshot.awayLineup);
+        setDisplayedHomeScore(replaySnapshot.homeScore);
+        setDisplayedAwayScore(replaySnapshot.awayScore);
+        setDisplayedQuarter(replaySnapshot.displayedQuarter);
+        setDisplayedTime(replaySnapshot.displayedTime);
+        setCurrentEventIndex(0);
+        setLogs([]);
+        setIsLive(false);
+        setIsFinished(false);
+        if (replaySnapshot.replayEvents.length > 0) {
+          setLoadError(null);
         }
-
-        setDisplayedHomeScore(matchData.played ? Number(matchData.home_score || 0) : 0);
-        setDisplayedAwayScore(matchData.played ? Number(matchData.away_score || 0) : 0);
       } catch (error) {
         console.error(error);
         setLoadError('Error cargando el partido.');
@@ -841,6 +909,44 @@ function MatchEnginePageContent() {
 
     void loadContext();
   }, [requestedMatchId, router]);
+
+  useEffect(() => {
+    if (!currentMatch || currentMatch.played || matchEvents.length > 0 || persisting) return;
+
+    const pollMatch = async () => {
+      const { data, error } = await supabase.from('matches').select('*').eq('id', currentMatch.id).maybeSingle();
+      if (error || !data) return;
+
+      const refreshedMatch = data as MatchRow;
+      const replaySnapshot = buildReplaySnapshot(refreshedMatch, simulatorSettings.quarterDurationSeconds);
+      if (!refreshedMatch.played && replaySnapshot.replayEvents.length === 0) return;
+
+      setCurrentMatch(refreshedMatch);
+      setMatchEvents(replaySnapshot.replayEvents);
+      finalPartialsRef.current = replaySnapshot.replayPartials;
+      setDisplayedPartials(replaySnapshot.replayPartials);
+      setDisplayedHomeLineup(replaySnapshot.homeLineup);
+      setDisplayedAwayLineup(replaySnapshot.awayLineup);
+      setDisplayedHomeScore(replaySnapshot.homeScore);
+      setDisplayedAwayScore(replaySnapshot.awayScore);
+      setDisplayedQuarter(replaySnapshot.displayedQuarter);
+      setDisplayedTime(replaySnapshot.displayedTime);
+      setCurrentEventIndex(0);
+      setLogs([]);
+      setIsLive(false);
+      setIsFinished(false);
+      if (replaySnapshot.replayEvents.length > 0 || refreshedMatch.played) {
+        setLoadError(null);
+      }
+    };
+
+    void pollMatch();
+    const interval = window.setInterval(() => {
+      void pollMatch();
+    }, 30_000);
+
+    return () => window.clearInterval(interval);
+  }, [currentMatch, matchEvents.length, persisting, simulatorSettings.quarterDurationSeconds]);
 
   const applyRegularSeasonStandings = async (match: MatchRow, finalHome: number, finalAway: number) => {
     if ((match.fase || 'REGULAR').toUpperCase() !== 'REGULAR') return;
@@ -990,6 +1096,8 @@ function MatchEnginePageContent() {
         awayRoster,
         homeTactics,
         awayTactics,
+        homeGamePlan: extractTeamGamePlan(currentMatch.home_tactics, homeTeam),
+        awayGamePlan: extractTeamGamePlan(currentMatch.away_tactics, awayTeam),
         homeTeamName: homeTeam.nombre,
         awayTeamName: awayTeam.nombre,
         homeTeamColor: homeTeam.color_primario || '#3b82f6',
@@ -1261,7 +1369,7 @@ function MatchEnginePageContent() {
           <div className="flex gap-3 mb-3">
             <button
               onClick={handleStartPause}
-              disabled={Boolean(loadError) || persisting || !currentMatch || waitingAutoSimulation}
+              disabled={persisting || !currentMatch || waitingAutoSimulation}
               className={`flex-1 py-4 rounded-xl font-black text-sm uppercase tracking-widest transition-all shadow-lg active:scale-95 ${isLive ? 'bg-red-500/20 text-red-400 border border-red-500/30' : 'bg-cyan-600 hover:bg-cyan-500 text-white disabled:opacity-40 disabled:hover:bg-cyan-600'}`}
             >
               {persisting ? (
@@ -1280,7 +1388,9 @@ function MatchEnginePageContent() {
                   {waitingAutoSimulation
                     ? 'Programado (Auto)'
                     : currentEventIndex === 0
-                      ? 'Iniciar Repetición'
+                      ? replayReadyBeforeFinalization
+                        ? 'Iniciar Directo'
+                        : 'Iniciar Repetición'
                       : 'Reanudar'}
                 </>
               )}
@@ -1305,7 +1415,9 @@ function MatchEnginePageContent() {
             ))}
             {logs.length === 0 && (
               <p className="text-xs uppercase tracking-widest text-slate-500 font-bold py-6 text-center">
-                {currentMatch?.played
+                {replayReadyBeforeFinalization
+                  ? 'Pulsa iniciar para ver el partido en directo.'
+                  : currentMatch?.played
                   ? 'Pulsa iniciar para ver la repetición.'
                   : `Partido pendiente de simulación automática${scheduledKickoffLabel ? ` (${scheduledKickoffLabel})` : ''}.`}
               </p>
@@ -1373,7 +1485,9 @@ function MatchEnginePageContent() {
 
       {currentMatch && !currentMatch.played && (
         <div className="w-full max-w-6xl mb-2 px-4 py-3 rounded-xl border border-emerald-500/20 bg-emerald-500/10 text-emerald-300 text-[10px] uppercase tracking-widest font-black">
-          Partido oficial programado: se simula automáticamente en su fecha/hora y luego queda disponible para repetición.
+          {replayReadyBeforeFinalization
+            ? 'Partido listo para emitirse en directo. El cierre oficial se consolidará automáticamente.'
+            : 'Partido oficial programado: se precalcula antes y se emite en directo a su hora oficial.'}
         </div>
       )}
 

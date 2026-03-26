@@ -39,7 +39,8 @@ Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/bui
 
 El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que ejecuta:
 
-- Simulación automática de partidos con `played = false` y `match_date <= now`.
+- Precálculo automático del replay antes de la hora oficial del partido.
+- Cierre oficial de partidos con `played = false` y `match_date <= now`.
 - Mantenimiento semanal (forma + reset de entrenos) mediante la RPC `run_weekly_maintenance`.
 - Cálculo de finanzas semanal (salarios + mantenimiento) ejecutado directamente en el endpoint (TypeScript).
 
@@ -49,6 +50,7 @@ El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que e
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `CRON_SECRET` (recomendado en producción)
 - `GITHUB_TOKEN` (necesario para `POST /api/github/sync` desde `/admin`)
+- `SCHEDULED_MATCH_PREP_MINUTES` (opcional, por defecto `15`)
 
 ### Cron en Vercel
 
@@ -64,10 +66,12 @@ Vercel enviará `Authorization: Bearer <CRON_SECRET>` si defines `CRON_SECRET` e
 Aplica las migraciones de `db/migrations`, en especial:
 
 - `20260302_automation_scheduler.sql`
+- `20260314_prepare_scheduled_match_replays.sql`
 - `20260304_add_github_integration_config.sql`
 
 Esa migración añade:
 
 - `match_date` en `matches` (con trigger/autocálculo por jornada).
+- Precálculo de replay en `matches` (`simulated_*`) para emitir en directo sin adelantar clasificaciones.
 - `automation_runs` para idempotencia.
 - Función `run_weekly_maintenance(boolean)` para el cierre semanal (forma y entrenos).

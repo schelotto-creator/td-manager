@@ -71,20 +71,35 @@ export default function TrainingCenter() {
     amount: number;
   }) => {
     const monto = -Math.abs(params.amount);
-    const basePayload = {
+    const payloadWithDate = {
       team_id: params.teamId,
       concepto: params.concept,
       monto,
-      tipo: 'GASTO'
+      tipo: 'GASTO',
+      fecha: new Date().toISOString()
     };
 
-    let { error } = await supabase.from('finance_transactions').insert(basePayload);
+    let payload: Record<string, unknown> = payloadWithDate;
+    let { error } = await supabase.from('finance_transactions').insert(payload);
     if (!error) return;
 
-    const errText = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (params.ownerId && errText.includes('owner_id')) {
+    const maybeFechaError = `${error.message || ''} ${error.details || ''}`.toLowerCase();
+    if (maybeFechaError.includes('fecha')) {
+      payload = {
+        team_id: params.teamId,
+        concepto: params.concept,
+        monto,
+        tipo: 'GASTO'
+      };
+      const retryNoFecha = await supabase.from('finance_transactions').insert(payload);
+      if (!retryNoFecha.error) return;
+      error = retryNoFecha.error;
+    }
+
+    const ownerErr = `${error.message || ''} ${error.details || ''}`.toLowerCase();
+    if (params.ownerId && ownerErr.includes('owner_id')) {
       const retry = await supabase.from('finance_transactions').insert({
-        ...basePayload,
+        ...payload,
         owner_id: params.ownerId
       });
       if (!retry.error) return;

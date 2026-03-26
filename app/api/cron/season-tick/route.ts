@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { runScheduledMatches } from '@/lib/scheduled-match-runner';
 import { getWeeklySalaryByOvr } from '@/lib/salary';
-import { fetchEconomyRules, getLeagueEconomy } from '@/lib/economy-balance';
+import { fetchEconomyRules, getLeagueEconomy, calculateSponsorshipAndFansIncome } from '@/lib/economy-balance';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,7 +53,7 @@ const runWeeklyFinanceUpdate = async (supabase: any) => {
     // 1. Obtener reglas económicas y datos necesarios
     const [economyRules, clubsRes, playersRes, leaguesRes] = await Promise.all([
       fetchEconomyRules(supabase),
-      supabase.from('clubes').select('id, league_id, presupuesto'),
+      supabase.from('clubes').select('id, league_id, presupuesto, fan_mood'),
       supabase.from('players').select('team_id, overall'),
       supabase.from('ligas').select('id, nivel')
     ]);
@@ -84,33 +84,82 @@ const runWeeklyFinanceUpdate = async (supabase: any) => {
         return sum + getWeeklySalaryByOvr(p.overall);
       }, 0);
 
-      // Calcular Mantenimiento de Estadio
+      // Calcular Economía de la Liga (Ingresos y Gastos fijos)
       let maintenance = 0;
+      let incomeSponsors = 0;
+      let incomeTickets = 0;
+
       if (club.league_id && leagueLevelMap.has(club.league_id)) {
         const level = leagueLevelMap.get(club.league_id);
         const economy = getLeagueEconomy(level, economyRules);
+        
+        // Gastos
         maintenance = economy.venueMaintenance;
+        
+        // Ingresos
+        incomeSponsors = calculateSponsorshipAndFansIncome(level, club.fan_mood || 50, economyRules);
+        incomeTickets = economy.ticketRevenueBase;
       }
 
       const totalExpenses = totalSalarios + maintenance;
+      const totalIncome = incomeSponsors + incomeTickets;
+      const netChange = totalIncome - totalExpenses; // Calculamos el cambio neto
 
       // 3. Actualizar Presupuesto y Registrar Transacción
-      if (totalExpenses > 0) {
-        // Actualizamos el presupuesto restando los gastos calculados
+      if (totalExpenses > 0 || totalIncome > 0) {
+        // Actualizamos el presupuesto sumando el cambio neto (que puede ser negativo)
         const { error: updateError } = await supabase
           .from('clubes')
-          .update({ presupuesto: (club.presupuesto || 0) - totalExpenses })
+          .update({ presupuesto: (club.presupuesto || 0) + netChange })
           .eq('id', club.id);
 
         if (!updateError) {
-          // Insertamos una ÚNICA transacción consolidada para la semana
-          await supabase.from('finance_transactions').insert({
-            team_id: club.id,
-            concepto: 'Cierre Semanal: Salarios y Mantenimiento',
-            monto: -totalExpenses,
-            tipo: 'GASTO',
-            fecha: new Date().toISOString()
-          });
+          // Insertamos transacciones detalladas para que el balance sea claro
+          const transactionsToInsert = [];
+          
+          if (totalSalarios > 0) {
+            transactionsToInsert.push({
+              team_id: club.id,
+              concepto: 'Pago semanal: salarios plantilla',
+              monto: -totalSalarios,
+              tipo: 'GASTO',
+              fecha: new Date().toISOString()
+            });
+          }
+          
+          if (maintenance > 0) {
+            transactionsToInsert.push({
+              team_id: club.id,
+              concepto: 'Gasto semanal: mantenimiento pabellón',
+              monto: -maintenance,
+              tipo: 'GASTO',
+              fecha: new Date().toISOString()
+            });
+          }
+
+          if (incomeSponsors > 0) {
+            transactionsToInsert.push({
+              team_id: club.id,
+              concepto: 'Ingreso semanal: patrocinadores y socios',
+              monto: incomeSponsors,
+              tipo: 'INGRESO',
+              fecha: new Date().toISOString()
+            });
+          }
+
+          if (incomeTickets > 0) {
+            transactionsToInsert.push({
+              team_id: club.id,
+              concepto: 'Ingreso semanal: taquillas y entradas',
+              monto: incomeTickets,
+              tipo: 'INGRESO',
+              fecha: new Date().toISOString()
+            });
+          }
+
+          if (transactionsToInsert.length > 0) {
+            await supabase.from('finance_transactions').insert(transactionsToInsert);
+          }
         }
       }
     }
