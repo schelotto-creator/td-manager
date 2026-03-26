@@ -54,12 +54,14 @@ El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que e
 
 ### Cron en Vercel
 
-Se configura en `vercel.json` para ejecutarse cada minuto:
+En `vercel.json` está configurado para ejecutarse una vez al día y ser compatible con Vercel Hobby:
 
 - `path`: `/api/cron/season-tick`
-- `schedule`: `* * * * *`
+- `schedule`: `0 3 * * *`
 
 Vercel enviará `Authorization: Bearer <CRON_SECRET>` si defines `CRON_SECRET` en el proyecto.
+
+Si despliegas en Vercel Pro/Enterprise y necesitas preparar/cerrar partidos cerca de su hora oficial, puedes cambiar el cron a `* * * * *`.
 
 ### SQL necesario
 
