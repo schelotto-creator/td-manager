@@ -1,6 +1,6 @@
 'use client';
 
-import { Suspense, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Activity, Calendar, ChevronLeft, FastForward, Pause, Play, ShieldAlert } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -24,6 +24,7 @@ import {
   getDefaultPositionOverallConfig,
   type PositionOverallConfig
 } from '@/lib/position-overall-config';
+import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
 
 type TeamId = string;
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
@@ -202,6 +203,8 @@ type PlayerGameStat = {
   rebounds: number;
   assists: number;
   turnovers: number;
+  fouls_committed: number;
+  fouls_received: number;
   efficiency: number;
 };
 
@@ -301,6 +304,8 @@ const buildPlayerGameStatsFromEvents = (
       rebounds: 0,
       assists: 0,
       turnovers: 0,
+      fouls_committed: 0,
+      fouls_received: 0,
       efficiency: 0
     };
     byPlayerId.set(playerId, created);
@@ -319,9 +324,15 @@ const buildPlayerGameStatsFromEvents = (
           row.points += points;
           row.efficiency += points;
         }
-        if (ev.type === 'turnover' || ev.type === 'fail') {
+        if (ev.type === 'turnover') {
           row.turnovers += 1;
           row.efficiency -= 1;
+        }
+        if (ev.type === 'fail') {
+          row.efficiency -= 1;
+        }
+        if (ev.type === 'foul') {
+          row.fouls_received += 1;
         }
       }
     }
@@ -345,10 +356,26 @@ const buildPlayerGameStatsFromEvents = (
         row.efficiency += 1;
       }
     }
+
+    if (ev.type === 'foul' && ev.defender) {
+      const defenderSide: TeamSide = attackSide === 'home' ? 'away' : 'home';
+      const defender = resolvePlayer(ev.defender, defenderSide);
+      if (defender) {
+        const row = ensureRow(defender.player.id, defender.teamId);
+        row.fouls_committed += 1;
+        row.efficiency -= 1;
+      }
+    }
   });
 
   return Array.from(byPlayerId.values()).filter(
-    (row) => row.points > 0 || row.rebounds > 0 || row.assists > 0 || row.turnovers > 0
+    (row) =>
+      row.points > 0 ||
+      row.rebounds > 0 ||
+      row.assists > 0 ||
+      row.turnovers > 0 ||
+      row.fouls_committed > 0 ||
+      row.fouls_received > 0
   );
 };
 
@@ -381,6 +408,8 @@ const buildPayloadFromTemplate = (
     rebounds: string;
     assists: string;
     turnovers?: string;
+    fouls_committed?: string;
+    fouls_received?: string;
     efficiency?: string;
   },
   matchId: number
@@ -395,6 +424,8 @@ const buildPayloadFromTemplate = (
     };
     if (template.team) payload[template.team] = row.team_id;
     if (template.turnovers) payload[template.turnovers] = row.turnovers;
+    if (template.fouls_committed) payload[template.fouls_committed] = row.fouls_committed;
+    if (template.fouls_received) payload[template.fouls_received] = row.fouls_received;
     if (template.efficiency) payload[template.efficiency] = row.efficiency;
     return payload;
   });
@@ -418,6 +449,8 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
       rebounds: 'rebounds',
       assists: 'assists',
       turnovers: 'turnovers',
+      fouls_committed: 'fouls_committed',
+      fouls_received: 'fouls_received',
       efficiency: 'efficiency'
     },
     {
@@ -428,6 +461,8 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
       rebounds: 'reb',
       assists: 'ast',
       turnovers: 'tov',
+      fouls_committed: 'pf',
+      fouls_received: 'fouls_received',
       efficiency: 'val'
     },
     {
@@ -438,6 +473,8 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
       rebounds: 'rebotes',
       assists: 'asistencias',
       turnovers: 'perdidas',
+      fouls_committed: 'faltas',
+      fouls_received: 'faltas_recibidas',
       efficiency: 'valoracion'
     },
     {
@@ -448,6 +485,8 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
       rebounds: 'rebounds',
       assists: 'assists',
       turnovers: 'turnovers',
+      fouls_committed: 'fouls_committed',
+      fouls_received: 'fouls_received',
       efficiency: 'efficiency'
     },
     {
@@ -458,6 +497,8 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
       rebounds: 'rebotes',
       assists: 'asistencias',
       turnovers: 'perdidas',
+      fouls_committed: 'faltas',
+      fouls_received: 'faltas_recibidas',
       efficiency: 'valoracion'
     }
   ] as const;
@@ -500,6 +541,40 @@ const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
   }
 
   return { ok: false as const, error: lastError };
+};
+
+const applyMatchExperienceProgression = async (
+  events: MatchEvent[],
+  statsRows: PlayerGameStat[]
+) => {
+  const deltas = buildMatchExperienceDeltas(events, statsRows);
+  if (deltas.length === 0) return null;
+
+  const deltaByPlayerId = new Map(deltas.map((entry) => [entry.playerId, entry.delta]));
+  const playerIds = deltas.map((entry) => entry.playerId);
+  const { data: playersData, error: playersError } = await supabase
+    .from('players')
+    .select('id, experience')
+    .in('id', playerIds);
+
+  if (playersError) {
+    throw new Error(`No se pudo cargar experiencia de jugadores: ${toErrorText(playersError)}`);
+  }
+
+  for (const player of (playersData || []) as Array<{ id: number; experience?: number | null }>) {
+    const { error } = await supabase
+      .from('players')
+      .update({
+        experience: applyExperienceDelta(player.experience, deltaByPlayerId.get(Number(player.id)) || 0)
+      })
+      .eq('id', player.id);
+
+    if (error) {
+      throw new Error(`No se pudo guardar experiencia de jugadores: ${toErrorText(error)}`);
+    }
+  }
+
+  return `${playerIds.length} jugadores ganaron experiencia tras el partido.`;
 };
 
 const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
@@ -599,7 +674,11 @@ const toReplayEvents = (raw: unknown): MatchEvent[] => {
         home_q: homeQ,
         away_q: awayQ,
         type:
-          entry.type === 'basket' || entry.type === 'turnover' || entry.type === 'fail' || entry.type === 'info'
+          entry.type === 'basket' ||
+          entry.type === 'turnover' ||
+          entry.type === 'fail' ||
+          entry.type === 'info' ||
+          entry.type === 'foul'
             ? entry.type
             : 'info',
         text: typeof entry.text === 'string' ? entry.text : 'Acción sin descripción',
@@ -607,8 +686,16 @@ const toReplayEvents = (raw: unknown): MatchEvent[] => {
         teamColor: typeof entry.teamColor === 'string' ? entry.teamColor : '#3b82f6',
         attacker: typeof entry.attacker === 'string' ? entry.attacker : undefined,
         assister: typeof entry.assister === 'string' ? entry.assister : undefined,
+        defender: typeof entry.defender === 'string' ? entry.defender : undefined,
         rebounder: typeof entry.rebounder === 'string' ? entry.rebounder : undefined,
         points: typeof entry.points === 'number' ? entry.points : undefined,
+        freeThrowsMade: typeof entry.freeThrowsMade === 'number' ? entry.freeThrowsMade : undefined,
+        freeThrowsAttempted:
+          typeof entry.freeThrowsAttempted === 'number' ? entry.freeThrowsAttempted : undefined,
+        isShootingFoul:
+          typeof entry.isShootingFoul === 'boolean' ? entry.isShootingFoul : undefined,
+        homeTeamFouls: typeof entry.homeTeamFouls === 'number' ? entry.homeTeamFouls : undefined,
+        awayTeamFouls: typeof entry.awayTeamFouls === 'number' ? entry.awayTeamFouls : undefined,
         homeLineup: Array.isArray(entry.homeLineup) ? (entry.homeLineup as LineupPlayer[]) : [],
         awayLineup: Array.isArray(entry.awayLineup) ? (entry.awayLineup as LineupPlayer[]) : []
       };
@@ -681,6 +768,11 @@ function MatchEnginePageContent() {
   const [isFinished, setIsFinished] = useState(false);
   const [speed, setSpeed] = useState(1);
   const playTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const liveUnlockTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const autoSimulationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const autoStartedLiveMatchIdRef = useRef<number | null>(null);
+  const autoPreparedLiveMatchIdRef = useRef<number | null>(null);
+  const prepareSimulationIfNeededRef = useRef<(() => Promise<boolean>) | null>(null);
   const finalPartialsRef = useRef([...DEFAULT_PARTIALS]);
   const homeAssignedQuartersMap = useMemo(() => buildAssignedQuartersMap(homeTactics), [homeTactics]);
   const awayAssignedQuartersMap = useMemo(() => buildAssignedQuartersMap(awayTactics), [awayTactics]);
@@ -771,6 +863,26 @@ function MatchEnginePageContent() {
       }).format(parsed) + ' CET/CEST'
     );
   }, [currentMatch?.match_date]);
+
+  const applyReplaySnapshot = useCallback((matchData: MatchRow, replaySnapshot: ReturnType<typeof buildReplaySnapshot>) => {
+    setCurrentMatch(matchData);
+    setMatchEvents(replaySnapshot.replayEvents);
+    finalPartialsRef.current = replaySnapshot.replayPartials;
+    setDisplayedPartials(replaySnapshot.replayPartials);
+    setDisplayedHomeLineup(replaySnapshot.homeLineup);
+    setDisplayedAwayLineup(replaySnapshot.awayLineup);
+    setDisplayedHomeScore(replaySnapshot.homeScore);
+    setDisplayedAwayScore(replaySnapshot.awayScore);
+    setDisplayedQuarter(replaySnapshot.displayedQuarter);
+    setDisplayedTime(replaySnapshot.displayedTime);
+    setCurrentEventIndex(0);
+    setLogs([]);
+    setIsLive(false);
+    setIsFinished(false);
+    if (replaySnapshot.replayEvents.length > 0 || matchData.played) {
+      setLoadError(null);
+    }
+  }, []);
 
   useEffect(() => {
     const loadContext = async () => {
@@ -883,22 +995,7 @@ function MatchEnginePageContent() {
         setAwayTactics(awayGamePlan.rotations || undefined);
 
         const replaySnapshot = buildReplaySnapshot(matchData, loadedSettings.quarterDurationSeconds);
-        setMatchEvents(replaySnapshot.replayEvents);
-        finalPartialsRef.current = replaySnapshot.replayPartials;
-        setDisplayedPartials(replaySnapshot.replayPartials);
-        setDisplayedHomeLineup(replaySnapshot.homeLineup);
-        setDisplayedAwayLineup(replaySnapshot.awayLineup);
-        setDisplayedHomeScore(replaySnapshot.homeScore);
-        setDisplayedAwayScore(replaySnapshot.awayScore);
-        setDisplayedQuarter(replaySnapshot.displayedQuarter);
-        setDisplayedTime(replaySnapshot.displayedTime);
-        setCurrentEventIndex(0);
-        setLogs([]);
-        setIsLive(false);
-        setIsFinished(false);
-        if (replaySnapshot.replayEvents.length > 0) {
-          setLoadError(null);
-        }
+        applyReplaySnapshot(matchData, replaySnapshot);
       } catch (error) {
         console.error(error);
         setLoadError('Error cargando el partido.');
@@ -908,7 +1005,7 @@ function MatchEnginePageContent() {
     };
 
     void loadContext();
-  }, [requestedMatchId, router]);
+  }, [applyReplaySnapshot, requestedMatchId, router]);
 
   useEffect(() => {
     if (!currentMatch || currentMatch.played || matchEvents.length > 0 || persisting) return;
@@ -919,34 +1016,83 @@ function MatchEnginePageContent() {
 
       const refreshedMatch = data as MatchRow;
       const replaySnapshot = buildReplaySnapshot(refreshedMatch, simulatorSettings.quarterDurationSeconds);
-      if (!refreshedMatch.played && replaySnapshot.replayEvents.length === 0) return;
-
-      setCurrentMatch(refreshedMatch);
-      setMatchEvents(replaySnapshot.replayEvents);
-      finalPartialsRef.current = replaySnapshot.replayPartials;
-      setDisplayedPartials(replaySnapshot.replayPartials);
-      setDisplayedHomeLineup(replaySnapshot.homeLineup);
-      setDisplayedAwayLineup(replaySnapshot.awayLineup);
-      setDisplayedHomeScore(replaySnapshot.homeScore);
-      setDisplayedAwayScore(replaySnapshot.awayScore);
-      setDisplayedQuarter(replaySnapshot.displayedQuarter);
-      setDisplayedTime(replaySnapshot.displayedTime);
-      setCurrentEventIndex(0);
-      setLogs([]);
-      setIsLive(false);
-      setIsFinished(false);
-      if (replaySnapshot.replayEvents.length > 0 || refreshedMatch.played) {
-        setLoadError(null);
+      if (!refreshedMatch.played && replaySnapshot.replayEvents.length === 0) {
+        if (toReplayEvents(refreshedMatch.simulated_play_by_play).length > 0) {
+          setCurrentMatch(refreshedMatch);
+        }
+        return;
       }
+
+      applyReplaySnapshot(refreshedMatch, replaySnapshot);
     };
 
     void pollMatch();
     const interval = window.setInterval(() => {
       void pollMatch();
-    }, 30_000);
+    }, 5_000);
 
     return () => window.clearInterval(interval);
-  }, [currentMatch, matchEvents.length, persisting, simulatorSettings.quarterDurationSeconds]);
+  }, [applyReplaySnapshot, currentMatch, matchEvents.length, persisting, simulatorSettings.quarterDurationSeconds]);
+
+  useEffect(() => {
+    autoStartedLiveMatchIdRef.current = null;
+    autoPreparedLiveMatchIdRef.current = null;
+  }, [currentMatch?.id]);
+
+  useEffect(() => {
+    if (liveUnlockTimerRef.current) {
+      clearTimeout(liveUnlockTimerRef.current);
+      liveUnlockTimerRef.current = null;
+    }
+
+    if (!currentMatch || currentMatch.played || matchEvents.length > 0) return;
+
+    const preparedReplay = toReplayEvents(currentMatch.simulated_play_by_play);
+    if (preparedReplay.length === 0 || !currentMatch.match_date) return;
+
+    const kickoffAt = new Date(currentMatch.match_date).getTime();
+    if (!Number.isFinite(kickoffAt)) return;
+
+    const activateReplay = () => {
+      const replaySnapshot = buildReplaySnapshot(
+        currentMatch,
+        simulatorSettings.quarterDurationSeconds,
+        new Date()
+      );
+      if (replaySnapshot.replayEvents.length > 0) {
+        applyReplaySnapshot(currentMatch, replaySnapshot);
+      }
+    };
+
+    const delayMs = kickoffAt - Date.now();
+    if (delayMs <= 0) {
+      activateReplay();
+      return;
+    }
+
+    liveUnlockTimerRef.current = setTimeout(() => {
+      activateReplay();
+      liveUnlockTimerRef.current = null;
+    }, delayMs + 250);
+
+    return () => {
+      if (liveUnlockTimerRef.current) {
+        clearTimeout(liveUnlockTimerRef.current);
+        liveUnlockTimerRef.current = null;
+      }
+    };
+  }, [applyReplaySnapshot, currentMatch, matchEvents.length, simulatorSettings.quarterDurationSeconds]);
+
+  useEffect(() => {
+    if (!currentMatch || currentMatch.played || persisting || isLive || isFinished) return;
+    if (matchEvents.length === 0 || currentEventIndex > 0) return;
+    if (!hasReachedOfficialTipoff(currentMatch.match_date)) return;
+    if (autoStartedLiveMatchIdRef.current === currentMatch.id) return;
+
+    autoStartedLiveMatchIdRef.current = currentMatch.id;
+    setLoadError(null);
+    setIsLive(true);
+  }, [currentEventIndex, currentMatch, isFinished, isLive, matchEvents.length, persisting]);
 
   const applyRegularSeasonStandings = async (match: MatchRow, finalHome: number, finalAway: number) => {
     if ((match.fase || 'REGULAR').toUpperCase() !== 'REGULAR') return;
@@ -1045,6 +1191,13 @@ function MatchEnginePageContent() {
 
       await applyRegularSeasonStandings(match, simulation.finalScore.home, simulation.finalScore.away);
 
+      try {
+        const progressionWarning = await applyMatchExperienceProgression(simulation.events, gameStatsRows);
+        if (progressionWarning) fallbackWarnings.push(progressionWarning);
+      } catch (progressionError) {
+        fallbackWarnings.push(toErrorText(progressionError));
+      }
+
       return {
         updatedMatch: updatedMatch as MatchRow,
         warning: fallbackWarnings.join(' ')
@@ -1069,7 +1222,18 @@ function MatchEnginePageContent() {
       };
     }
 
-    return { updatedMatch, warning };
+    try {
+      const progressionWarning = await applyMatchExperienceProgression(simulation.events, gameStatsRows);
+      return {
+        updatedMatch,
+        warning: [warning, progressionWarning].filter(Boolean).join(' ').trim() || null
+      };
+    } catch (progressionError) {
+      return {
+        updatedMatch,
+        warning: [warning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
+      };
+    }
   };
 
   const prepareSimulationIfNeeded = async () => {
@@ -1132,6 +1296,54 @@ function MatchEnginePageContent() {
       setPersisting(false);
     }
   };
+
+  prepareSimulationIfNeededRef.current = prepareSimulationIfNeeded;
+
+  useEffect(() => {
+    if (autoSimulationTimerRef.current) {
+      clearTimeout(autoSimulationTimerRef.current);
+      autoSimulationTimerRef.current = null;
+    }
+
+    if (!currentMatch || currentMatch.played || persisting || isLive || matchEvents.length > 0) return;
+    if (!canGenerateSimulation || !currentMatch.match_date) return;
+    if (toReplayEvents(currentMatch.simulated_play_by_play).length > 0) return;
+
+    const kickoffAt = new Date(currentMatch.match_date).getTime();
+    if (!Number.isFinite(kickoffAt)) return;
+
+    const prepareAndStartLive = async () => {
+      if (autoPreparedLiveMatchIdRef.current === currentMatch.id) return;
+      autoPreparedLiveMatchIdRef.current = currentMatch.id;
+
+      const prepared = await prepareSimulationIfNeededRef.current?.();
+      if (!prepared) {
+        autoPreparedLiveMatchIdRef.current = null;
+        return;
+      }
+
+      setLoadError(null);
+      setIsLive(true);
+    };
+
+    const delayMs = kickoffAt - Date.now();
+    if (delayMs <= 0) {
+      void prepareAndStartLive();
+      return;
+    }
+
+    autoSimulationTimerRef.current = setTimeout(() => {
+      void prepareAndStartLive();
+      autoSimulationTimerRef.current = null;
+    }, delayMs + 250);
+
+    return () => {
+      if (autoSimulationTimerRef.current) {
+        clearTimeout(autoSimulationTimerRef.current);
+        autoSimulationTimerRef.current = null;
+      }
+    };
+  }, [canGenerateSimulation, currentMatch, isLive, matchEvents.length, persisting]);
 
   useEffect(() => {
     if (!isLive || matchEvents.length === 0) return;

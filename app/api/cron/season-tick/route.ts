@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { runScheduledMatches } from '@/lib/scheduled-match-runner';
 import { getWeeklySalaryByOvr } from '@/lib/salary';
 import { fetchEconomyRules, getLeagueEconomy, calculateSponsorshipAndFansIncome } from '@/lib/economy-balance';
+import { runWeeklyMaintenanceFallback } from '@/lib/weekly-maintenance-fallback';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -193,9 +194,12 @@ const runTick = async (request: NextRequest) => {
     const { data, error } = await supabaseAdmin.rpc('run_weekly_maintenance', { p_force: forceWeekly });
     if (error) {
       if (isMissingRpc(error, 'run_weekly_maintenance')) {
-        weeklyMaintenance = { status: 'rpc_missing' };
+        weeklyMaintenance = await runWeeklyMaintenanceFallback(supabaseAdmin, {
+          now,
+          force: forceWeekly
+        });
         warnings.push(
-          'run_weekly_maintenance no existe en BD. Aplica la migración 20260302_automation_scheduler.sql.'
+          'run_weekly_maintenance no existe en BD. Se usó fallback TypeScript para la forma semanal.'
         );
       } else {
         throw new Error(`Fallo mantenimiento semanal: ${toErrorText(error)}`);
@@ -209,7 +213,7 @@ const runTick = async (request: NextRequest) => {
     // Si es 'already_done', significa que ya se hizo y NO debemos volver a cobrar.
     const maintenanceStatus = (weeklyMaintenance as any)?.status;
     
-    if (forceWeekly || maintenanceStatus === 'ok') {
+    if (maintenanceStatus === 'ok') {
        const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
        weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }

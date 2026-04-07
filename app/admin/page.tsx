@@ -159,6 +159,16 @@ const SIMULATOR_FIELD_GROUPS: Array<{
     ]
   },
   {
+    title: 'Faltas y tiros libres',
+    fields: [
+      { key: 'foulBaseChance', label: 'Falta base', min: 0, max: 60, step: 0.1, hint: 'Probabilidad % por posesión' },
+      { key: 'shootingFoulRate', label: 'Falta de tiro', min: 0.05, max: 0.95, step: 0.01, hint: '0.58 = 58%' },
+      { key: 'bonusTeamFoulLimit', label: 'Bonus por equipo', min: 3, max: 8, step: 1, hint: '5 = bonus tras la 4ª' },
+      { key: 'freeThrowBaseChance', label: 'Acierto base TL', min: 5, max: 95, step: 0.1, hint: 'Probabilidad %' },
+      { key: 'freeThrowSkillImpact', label: 'Impacto skill TL', min: 0, max: 1, step: 0.01 }
+    ]
+  },
+  {
     title: 'Pérdidas y rebote',
     fields: [
       { key: 'turnoverBaseChance', label: 'Pérdida base', min: 0, max: 60, step: 0.1, hint: 'Probabilidad %' },

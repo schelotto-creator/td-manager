@@ -49,6 +49,154 @@ type Player = {
   };
 };
 
+type SeasonStatsSummary = {
+  ppg: number;
+  rpg: number;
+  apg: number;
+  games_played: number;
+  efficiency: number;
+};
+
+type SeasonStatsViewRow = {
+  id: number;
+  team_id: string;
+  games_played: number;
+  ppg: number;
+  rpg: number;
+  apg: number;
+  efficiency: number;
+};
+
+type PlayerMetaRow = {
+  id: number;
+  team_id: string | null;
+};
+
+type RawPlayerStatsRow = {
+  match_id: number;
+  player_id: number;
+  points: number;
+  rebounds: number;
+  assists: number;
+};
+
+const EMPTY_SEASON_STATS: SeasonStatsSummary = {
+  ppg: 0,
+  rpg: 0,
+  apg: 0,
+  games_played: 0,
+  efficiency: 0
+};
+
+const chunkArray = <T,>(items: T[], size: number) => {
+  if (size <= 0) return [items];
+  const chunks: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    chunks.push(items.slice(i, i + size));
+  }
+  return chunks;
+};
+
+const normalizeSeasonStats = (stats?: Partial<SeasonStatsSummary> | null): SeasonStatsSummary => ({
+  ppg: Number(stats?.ppg || 0),
+  rpg: Number(stats?.rpg || 0),
+  apg: Number(stats?.apg || 0),
+  games_played: Number(stats?.games_played || 0),
+  efficiency: Number(stats?.efficiency || 0)
+});
+
+const fetchSeasonStatsByTeam = async (teamId: string) => {
+  const statsByPlayerId = new Map<number, SeasonStatsSummary>();
+
+  const { data: viewData, error: viewError } = await supabase
+    .from('view_player_season_stats')
+    .select('id,team_id,games_played,ppg,rpg,apg,efficiency')
+    .eq('team_id', teamId);
+
+  if (!viewError && viewData) {
+    (viewData as SeasonStatsViewRow[]).forEach((row) => {
+      statsByPlayerId.set(Number(row.id), normalizeSeasonStats(row));
+    });
+    return statsByPlayerId;
+  }
+
+  if (viewError) {
+    console.warn('Vista view_player_season_stats no disponible. Se usa cálculo fallback.', viewError.message);
+  }
+
+  const { data: playerMetaData, error: playerMetaError } = await supabase
+    .from('players')
+    .select('id,team_id')
+    .eq('team_id', teamId);
+
+  if (playerMetaError) throw playerMetaError;
+
+  const playerIds = ((playerMetaData || []) as PlayerMetaRow[])
+    .map((player) => Number(player.id))
+    .filter((playerId) => Number.isFinite(playerId));
+
+  if (playerIds.length === 0) return statsByPlayerId;
+
+  const allRows: RawPlayerStatsRow[] = [];
+  const pageSize = 1000;
+  for (const playerBatch of chunkArray(playerIds, 200)) {
+    for (let from = 0; ; from += pageSize) {
+      const to = from + pageSize - 1;
+      const { data, error } = await supabase
+        .from('player_stats')
+        .select('match_id,player_id,points,rebounds,assists')
+        .in('player_id', playerBatch)
+        .range(from, to);
+
+      if (error) throw error;
+
+      const chunk = (data || []) as RawPlayerStatsRow[];
+      allRows.push(...chunk);
+      if (chunk.length < pageSize) break;
+    }
+  }
+
+  const aggregates = new Map<
+    number,
+    { matches: Set<number>; rows: number; points: number; rebounds: number; assists: number }
+  >();
+
+  allRows.forEach((row) => {
+    const playerId = Number(row.player_id);
+    if (!Number.isFinite(playerId)) return;
+
+    const current = aggregates.get(playerId) || {
+      matches: new Set<number>(),
+      rows: 0,
+      points: 0,
+      rebounds: 0,
+      assists: 0
+    };
+
+    const matchId = Number(row.match_id);
+    if (Number.isFinite(matchId)) current.matches.add(matchId);
+
+    current.rows += 1;
+    current.points += Number(row.points || 0);
+    current.rebounds += Number(row.rebounds || 0);
+    current.assists += Number(row.assists || 0);
+    aggregates.set(playerId, current);
+  });
+
+  aggregates.forEach((aggregate, playerId) => {
+    const games = Math.max(1, aggregate.matches.size || aggregate.rows);
+    statsByPlayerId.set(playerId, {
+      ppg: Number((aggregate.points / games).toFixed(1)),
+      rpg: Number((aggregate.rebounds / games).toFixed(1)),
+      apg: Number((aggregate.assists / games).toFixed(1)),
+      games_played: games,
+      efficiency: Number(((aggregate.points + aggregate.rebounds + aggregate.assists) / games).toFixed(1))
+    });
+  });
+
+  return statsByPlayerId;
+};
+
 const FLAGS: Record<string, string> = {
   'USA': '🇺🇸', 'ESP': '🇪🇸', 'ARG': '🇦🇷', 'LTU': '🇱🇹', 
   'SVK': '🇸🇰', 'CHN': '🇨🇳', 'FRA': '🇫🇷', 'GER': '🇩🇪'
@@ -101,16 +249,12 @@ export default function TeamManagement() {
         ]);
         const roster = rosterRes.data;
         setPositionOverallConfig(dynamicPositionConfig);
-        
-        let stats = [];
-        try {
-            const { data, error } = await supabase.from('view_player_season_stats').select('*').eq('team_id', myTeam.id);
-            if (!error && data) stats = data;
-        } catch (err) { console.warn("Vista de stats no disponible."); }
+
+        const seasonStatsByPlayer = await fetchSeasonStatsByTeam(String(myTeam.id));
 
         if (roster) {
             const enriched = roster.map(p => {
-                const pStats = stats?.find((s: any) => s.id === p.id);
+                const pStats = seasonStatsByPlayer.get(Number(p.id)) || EMPTY_SEASON_STATS;
                 const bestPosition = getBestRoleForPlayer(p, dynamicPositionConfig);
                 return {
                     ...p,
@@ -118,14 +262,8 @@ export default function TeamManagement() {
                     nationality: p.nationality || 'USA', 
                     experience: p.experience || 0, 
                     overall: calculateRealOverall(p, dynamicPositionConfig),
-                    efficiency: pStats ? (pStats.efficiency || 0) : 0,
-                    seasonStats: pStats ? {
-                        ppg: pStats.ppg || 0,
-                        rpg: pStats.rpg || 0,
-                        apg: pStats.apg || 0,
-                        games_played: pStats.games_played || 0,
-                        efficiency: pStats.efficiency || 0
-                    } : { ppg: 0, rpg: 0, apg: 0, games_played: 0, efficiency: 0 }
+                    efficiency: pStats.efficiency,
+                    seasonStats: pStats
                 };
             });
             setPlayers(enriched);

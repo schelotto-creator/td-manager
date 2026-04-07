@@ -60,14 +60,20 @@ export type MatchEvent = {
   away_score: number;
   home_q: number;
   away_q: number;
-  type: 'info' | 'basket' | 'fail' | 'turnover';
+  type: 'info' | 'basket' | 'fail' | 'turnover' | 'foul';
   text: string;
   isHomeAction: boolean;
   teamColor: string;
   attacker?: string;
   assister?: string;
+  defender?: string;
   rebounder?: string;
   points?: number;
+  freeThrowsMade?: number;
+  freeThrowsAttempted?: number;
+  isShootingFoul?: boolean;
+  homeTeamFouls?: number;
+  awayTeamFouls?: number;
   homeLineup: LineupPlayer[];
   awayLineup: LineupPlayer[];
 };
@@ -444,6 +450,27 @@ const getTurnoverTacticalModifier = (
   return modifier;
 };
 
+const getFoulTacticalModifier = (
+  offenseStyle: OffenseStyle,
+  defenseStyle: DefenseStyle,
+  attackerRole: CourtRole,
+  defenderRole: CourtRole,
+  isThreePointer: boolean
+) => {
+  let modifier = 0;
+
+  if (defenseStyle === 'PRESSING') modifier += 4;
+  if (defenseStyle === 'ZONE_2_3') modifier -= 1.5;
+
+  if (offenseStyle === 'PAINT_FOCUS' && !isThreePointer) modifier += 2.5;
+  if (offenseStyle === 'RUN_AND_GUN' && isThreePointer) modifier -= 1;
+
+  if (attackerRole === 'Pívot' || attackerRole === 'Ala-Pívot') modifier += 1.5;
+  if (defenderRole === 'Base' && !isThreePointer) modifier += 1;
+
+  return modifier;
+};
+
 const getOffensiveReboundRate = (
   baseRate: number,
   offenseStyle: OffenseStyle,
@@ -455,6 +482,31 @@ const getOffensiveReboundRate = (
   if (defenseStyle === 'ZONE_2_3') modifier -= 0.04;
   if (defenseStyle === 'PRESSING') modifier += 0.02;
   return clamp(baseRate + modifier, 0.05, 0.7);
+};
+
+const getFreeThrowChance = (player: EnginePlayer, settings: MatchSimulatorSettings) => {
+  const shootingTouch = player.shooting_2pt * 0.65 + player.shooting_3pt * 0.35;
+  const experienceBonus = (player.experience ?? 0) * 0.1;
+  return clamp(
+    settings.freeThrowBaseChance + (shootingTouch + experienceBonus - 70) * settings.freeThrowSkillImpact,
+    45,
+    96
+  );
+};
+
+const attemptFreeThrows = (
+  shooter: EnginePlayer,
+  attempts: number,
+  settings: MatchSimulatorSettings
+) => {
+  const chance = getFreeThrowChance(shooter, settings);
+  let made = 0;
+
+  for (let i = 0; i < attempts; i++) {
+    if (Math.random() * 100 < chance) made += 1;
+  }
+
+  return made;
 };
 
 export const generateMatchSimulation = ({
@@ -502,6 +554,8 @@ export const generateMatchSimulation = ({
     let isHomeAttacking = q % 2 === 0;
     let homeQScore = 0;
     let awayQScore = 0;
+    let homeTeamFouls = 0;
+    let awayTeamFouls = 0;
 
     if (q > 0) {
       simHomeRoster.forEach((player) => {
@@ -616,6 +670,20 @@ export const generateMatchSimulation = ({
         cfg.shotChanceMin,
         cfg.shotChanceMax
       );
+      const foulChance = clamp(
+        cfg.foulBaseChance +
+          Math.max(0, attackerRating - defenderRating) * 0.1 +
+          Math.max(0, 70 - defenderEnergy) * 0.12 +
+          getFoulTacticalModifier(
+            attackingPlan.offenseStyle,
+            defendingPlan.defenseStyle,
+            attackerRole,
+            defenderRole,
+            isThreePointer
+          ),
+        2,
+        45
+      );
       const turnoverChance = clamp(
         cfg.turnoverBaseChance +
           Math.max(0, 60 - attackerEnergy) * cfg.turnoverLowEnergyImpact +
@@ -626,7 +694,59 @@ export const generateMatchSimulation = ({
         cfg.turnoverChanceMax
       );
 
-      if (Math.random() * 100 < turnoverChance) {
+      let shouldTogglePossession = true;
+
+      if (Math.random() * 100 < foulChance) {
+        const foulingTeamIsHome = !isHomeAttacking;
+        const offensiveTeamName = isHomeAttacking ? homeTeamName : awayTeamName;
+
+        if (foulingTeamIsHome) {
+          homeTeamFouls += 1;
+        } else {
+          awayTeamFouls += 1;
+        }
+
+        const defensiveTeamFouls = foulingTeamIsHome ? homeTeamFouls : awayTeamFouls;
+        const isShootingFoul = Math.random() < cfg.shootingFoulRate;
+        const freeThrowAttempts = isShootingFoul
+          ? (isThreePointer ? 3 : 2)
+          : defensiveTeamFouls >= cfg.bonusTeamFoulLimit
+            ? 2
+            : 0;
+
+        eventObj.type = 'foul';
+        eventObj.defender = defender.name;
+        eventObj.isShootingFoul = isShootingFoul;
+        eventObj.homeTeamFouls = homeTeamFouls;
+        eventObj.awayTeamFouls = awayTeamFouls;
+
+        if (freeThrowAttempts > 0) {
+          const madeFreeThrows = attemptFreeThrows(attacker, freeThrowAttempts, cfg);
+          eventObj.freeThrowsAttempted = freeThrowAttempts;
+          eventObj.freeThrowsMade = madeFreeThrows;
+          eventObj.points = madeFreeThrows;
+
+          if (isHomeAttacking) {
+            homeScore += madeFreeThrows;
+            homeQScore += madeFreeThrows;
+          } else {
+            awayScore += madeFreeThrows;
+            awayQScore += madeFreeThrows;
+          }
+
+          const contextLabel = isShootingFoul ? 'falta de tiro' : 'bonus';
+          eventObj.text =
+            `${defender.name} comete ${contextLabel} sobre ${attacker.name}. ` +
+            `${attacker.name} anota ${madeFreeThrows}/${freeThrowAttempts} tiros libres. ` +
+            `(${defensiveTeamFouls} faltas de equipo)`;
+        } else {
+          shouldTogglePossession = false;
+          eventObj.text =
+            `${defender.name} comete falta sobre ${attacker.name}. ` +
+            `${offensiveTeamName} mantiene la posesión. ` +
+            `(${defensiveTeamFouls} faltas de equipo)`;
+        }
+      } else if (Math.random() * 100 < turnoverChance) {
         eventObj.type = 'turnover';
         eventObj.text = `${attacker.name} pierde el balón ante ${defender.name}.`;
       } else if (Math.random() * 100 < shotChance) {
@@ -675,7 +795,9 @@ export const generateMatchSimulation = ({
       eventObj.away_q = awayQScore;
       events.push(eventObj);
 
-      isHomeAttacking = !isHomeAttacking;
+      if (shouldTogglePossession) {
+        isHomeAttacking = !isHomeAttacking;
+      }
     }
 
     partials[q] = { home: homeQScore, away: awayQScore };

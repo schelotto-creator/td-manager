@@ -8,6 +8,7 @@ import {
 } from '@/lib/match-engine';
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
+import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -66,6 +67,8 @@ type PlayerGameStat = {
   rebounds: number;
   assists: number;
   turnovers: number;
+  fouls_committed: number;
+  fouls_received: number;
   efficiency: number;
 };
 
@@ -107,6 +110,8 @@ type PrepareSimulationResult =
 const DEFAULT_SCHEDULED_MATCH_PREP_MINUTES = 15;
 const MATCH_SELECT_FIELDS =
   'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
+const LEGACY_MATCH_SELECT_FIELDS =
+  'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play';
 const MATCH_SCHEDULE_TIME_ZONE = 'Europe/Madrid';
 const MADRID_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
   timeZone: MATCH_SCHEDULE_TIME_ZONE,
@@ -165,6 +170,17 @@ const hasMissingStandingsColumns = (error: unknown) => {
     message.includes('column clubes.v does not exist') ||
     message.includes('column clubes.d does not exist') ||
     message.includes('column clubes.pts does not exist')
+  );
+};
+
+const hasMissingSimulationColumns = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('simulated_home_score') ||
+    message.includes('simulated_away_score') ||
+    message.includes('simulated_play_by_play') ||
+    message.includes('simulated_player_stats') ||
+    message.includes('simulation_ready_at')
   );
 };
 
@@ -444,6 +460,8 @@ const buildPlayerGameStatsFromEvents = (
       rebounds: 0,
       assists: 0,
       turnovers: 0,
+      fouls_committed: 0,
+      fouls_received: 0,
       efficiency: 0
     };
     byPlayerId.set(playerId, created);
@@ -462,9 +480,15 @@ const buildPlayerGameStatsFromEvents = (
           row.points += points;
           row.efficiency += points;
         }
-        if (ev.type === 'turnover' || ev.type === 'fail') {
+        if (ev.type === 'turnover') {
           row.turnovers += 1;
           row.efficiency -= 1;
+        }
+        if (ev.type === 'fail') {
+          row.efficiency -= 1;
+        }
+        if (ev.type === 'foul') {
+          row.fouls_received += 1;
         }
       }
     }
@@ -488,12 +512,29 @@ const buildPlayerGameStatsFromEvents = (
         row.efficiency += 1;
       }
     }
+
+    if (ev.type === 'foul' && ev.defender) {
+      const defenderSide: TeamSide = attackSide === 'home' ? 'away' : 'home';
+      const defender = resolvePlayer(ev.defender, defenderSide);
+      if (defender) {
+        const row = ensureRow(defender.player.id, defender.teamId);
+        row.fouls_committed += 1;
+        row.efficiency -= 1;
+      }
+    }
   });
 
   return Array.from(byPlayerId.values()).filter(
     (row) =>
       row.player_id > 0 &&
-      (row.points > 0 || row.rebounds > 0 || row.assists > 0 || row.turnovers > 0)
+      (
+        row.points > 0 ||
+        row.rebounds > 0 ||
+        row.assists > 0 ||
+        row.turnovers > 0 ||
+        row.fouls_committed > 0 ||
+        row.fouls_received > 0
+      )
   );
 };
 
@@ -507,6 +548,8 @@ const buildPayloadFromTemplate = (
     rebounds: string;
     assists: string;
     turnovers?: string;
+    fouls_committed?: string;
+    fouls_received?: string;
     efficiency?: string;
   },
   matchId: number
@@ -521,6 +564,8 @@ const buildPayloadFromTemplate = (
     };
     if (template.team) payload[template.team] = row.team_id;
     if (template.turnovers) payload[template.turnovers] = row.turnovers;
+    if (template.fouls_committed) payload[template.fouls_committed] = row.fouls_committed;
+    if (template.fouls_received) payload[template.fouls_received] = row.fouls_received;
     if (template.efficiency) payload[template.efficiency] = row.efficiency;
     return payload;
   });
@@ -548,6 +593,8 @@ const persistPlayerStats = async (
       rebounds: 'rebounds',
       assists: 'assists',
       turnovers: 'turnovers',
+      fouls_committed: 'fouls_committed',
+      fouls_received: 'fouls_received',
       efficiency: 'efficiency'
     },
     {
@@ -558,6 +605,8 @@ const persistPlayerStats = async (
       rebounds: 'reb',
       assists: 'ast',
       turnovers: 'tov',
+      fouls_committed: 'pf',
+      fouls_received: 'fouls_received',
       efficiency: 'val'
     },
     {
@@ -568,6 +617,8 @@ const persistPlayerStats = async (
       rebounds: 'rebotes',
       assists: 'asistencias',
       turnovers: 'perdidas',
+      fouls_committed: 'faltas',
+      fouls_received: 'faltas_recibidas',
       efficiency: 'valoracion'
     },
     {
@@ -578,6 +629,8 @@ const persistPlayerStats = async (
       rebounds: 'rebounds',
       assists: 'assists',
       turnovers: 'turnovers',
+      fouls_committed: 'fouls_committed',
+      fouls_received: 'fouls_received',
       efficiency: 'efficiency'
     },
     {
@@ -588,6 +641,8 @@ const persistPlayerStats = async (
       rebounds: 'rebotes',
       assists: 'asistencias',
       turnovers: 'perdidas',
+      fouls_committed: 'faltas',
+      fouls_received: 'faltas_recibidas',
       efficiency: 'valoracion'
     }
   ] as const;
@@ -629,6 +684,46 @@ const persistPlayerStats = async (
   }
 
   return { ok: false as const, error: lastError };
+};
+
+const applyMatchExperienceProgression = async (
+  supabaseAdmin: SupabaseClient,
+  events: MatchEvent[],
+  statsRows: PlayerGameStat[]
+) => {
+  const deltas = buildMatchExperienceDeltas(events, statsRows);
+  if (deltas.length === 0) return null;
+
+  const deltaByPlayerId = new Map(deltas.map((entry) => [entry.playerId, entry.delta]));
+  const playerIds = deltas.map((entry) => entry.playerId);
+  const { data: playersData, error: playersError } = await supabaseAdmin
+    .from('players')
+    .select('id, experience')
+    .in('id', playerIds);
+
+  if (playersError) {
+    throw new Error(`No se pudo cargar experiencia de jugadores: ${toErrorText(playersError)}`);
+  }
+
+  for (const chunk of chunkArray((playersData || []) as Array<{ id: number; experience?: number | null }>, 50)) {
+    const updates = await Promise.all(
+      chunk.map((player) =>
+        supabaseAdmin
+          .from('players')
+          .update({
+            experience: applyExperienceDelta(player.experience, deltaByPlayerId.get(Number(player.id)) || 0)
+          })
+          .eq('id', player.id)
+      )
+    );
+
+    const firstError = updates.find((entry) => entry.error)?.error;
+    if (firstError) {
+      throw new Error(`No se pudo guardar experiencia de jugadores: ${toErrorText(firstError)}`);
+    }
+  }
+
+  return `${playerIds.length} jugadores ganaron experiencia tras el partido.`;
 };
 
 const applyRegularSeasonStandings = async (
@@ -731,7 +826,16 @@ const finalizeMatchPersistence = async (
     }
 
     await applyRegularSeasonStandings(supabaseAdmin, match, finalHome, finalAway);
-    return { status: 'ok', warning: 'RPC no disponible, se usó cierre legacy.' };
+    let warning = 'RPC no disponible, se usó cierre legacy.';
+
+    try {
+      const progressionWarning = await applyMatchExperienceProgression(supabaseAdmin, events, statsRows);
+      if (progressionWarning) warning = `${warning} ${progressionWarning}`.trim();
+    } catch (progressionError) {
+      warning = `${warning} ${toErrorText(progressionError)}`.trim();
+    }
+
+    return { status: 'ok', warning };
   }
 
   const rpcPayload = isRecord(rpcData) ? (rpcData as FinalizeMatchRpcResponse) : {};
@@ -745,14 +849,26 @@ const finalizeMatchPersistence = async (
     throw new Error(`Respuesta inesperada al cerrar partido: ${status}`);
   }
 
-  return { status: 'ok', warning };
+  try {
+    const progressionWarning = await applyMatchExperienceProgression(supabaseAdmin, events, statsRows);
+    return {
+      status: 'ok',
+      warning: [warning, progressionWarning].filter(Boolean).join(' ').trim() || null
+    };
+  } catch (progressionError) {
+    return {
+      status: 'ok',
+      warning: [warning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
+    };
+  }
 };
 
 const prepareMatchSimulation = async (
   supabaseAdmin: SupabaseClient,
   match: MatchRow,
   prepared: PreparedSimulation,
-  now: Date
+  now: Date,
+  selectFields: string
 ): Promise<PrepareSimulationResult> => {
   const payload = {
     simulated_home_score: prepared.finalHome,
@@ -768,7 +884,7 @@ const prepareMatchSimulation = async (
     .eq('id', match.id)
     .eq('played', false)
     .is('simulated_play_by_play', null)
-    .select(MATCH_SELECT_FIELDS)
+    .select(selectFields)
     .maybeSingle();
 
   if (updateError) {
@@ -776,12 +892,12 @@ const prepareMatchSimulation = async (
   }
 
   if (updatedMatch) {
-    return { status: 'ok', match: updatedMatch as MatchRow };
+    return { status: 'ok', match: updatedMatch as unknown as MatchRow };
   }
 
   const { data: latestMatch, error: latestMatchError } = await supabaseAdmin
     .from('matches')
-    .select(MATCH_SELECT_FIELDS)
+    .select(selectFields)
     .eq('id', match.id)
     .maybeSingle();
 
@@ -791,7 +907,7 @@ const prepareMatchSimulation = async (
     );
   }
 
-  const normalized = latestMatch as MatchRow;
+  const normalized = latestMatch as unknown as MatchRow;
   if (normalized.played) {
     return { status: 'already_played', match: normalized };
   }
@@ -819,9 +935,30 @@ const clearPreparedSimulation = async (
   }
 };
 
+const detectMatchSchemaCapabilities = async (supabaseAdmin: SupabaseClient) => {
+  const { error } = await supabaseAdmin.from('matches').select(MATCH_SELECT_FIELDS).limit(1);
+
+  if (!error) {
+    return {
+      selectFields: MATCH_SELECT_FIELDS,
+      supportsPreparedSimulationColumns: true
+    };
+  }
+
+  if (hasMissingSimulationColumns(error)) {
+    return {
+      selectFields: LEGACY_MATCH_SELECT_FIELDS,
+      supportsPreparedSimulationColumns: false
+    };
+  }
+
+  throw new Error(`No se pudo inspeccionar el esquema de matches: ${toErrorText(error)}`);
+};
+
 const persistMissingMatchDate = async (
   supabaseAdmin: SupabaseClient,
-  match: MatchRow
+  match: MatchRow,
+  selectFields: string
 ) => {
   if (!match.match_date) return { match, updated: false };
 
@@ -830,7 +967,7 @@ const persistMissingMatchDate = async (
     .update({ match_date: match.match_date })
     .eq('id', match.id)
     .is('match_date', null)
-    .select(MATCH_SELECT_FIELDS)
+    .select(selectFields)
     .maybeSingle();
 
   if (updateError) {
@@ -838,12 +975,12 @@ const persistMissingMatchDate = async (
   }
 
   if (updatedMatch) {
-    return { match: updatedMatch as MatchRow, updated: true };
+    return { match: updatedMatch as unknown as MatchRow, updated: true };
   }
 
   const { data: latestMatch, error: latestMatchError } = await supabaseAdmin
     .from('matches')
-    .select(MATCH_SELECT_FIELDS)
+    .select(selectFields)
     .eq('id', match.id)
     .maybeSingle();
 
@@ -853,7 +990,7 @@ const persistMissingMatchDate = async (
     );
   }
 
-  const normalizedLatest = latestMatch as MatchRow;
+  const normalizedLatest = latestMatch as unknown as MatchRow;
   if (!normalizedLatest.match_date) {
     return {
       match: {
@@ -875,6 +1012,8 @@ export const runScheduledMatches = async (
   const maxMatches = Math.max(1, Math.min(300, Number(opts?.maxMatches || 40)));
   const prepLeadMinutes = getScheduledMatchPrepMinutes();
   const prepCutoff = new Date(now.getTime() + prepLeadMinutes * 60_000);
+  const { selectFields, supportsPreparedSimulationColumns } =
+    await detectMatchSchemaCapabilities(supabaseAdmin);
 
   const { count: totalDueWithoutLimit, error: totalDueError } = await supabaseAdmin
     .from('matches')
@@ -916,7 +1055,7 @@ export const runScheduledMatches = async (
   if (Number(pendingWithoutDate || 0) > 0) {
     const { data: missingDateMatchesData, error: missingDateMatchesError } = await supabaseAdmin
       .from('matches')
-      .select(MATCH_SELECT_FIELDS)
+      .select(selectFields)
       .eq('played', false)
       .is('match_date', null)
       .not('jornada', 'is', null)
@@ -929,7 +1068,7 @@ export const runScheduledMatches = async (
       );
     }
 
-    for (const rawMatch of (missingDateMatchesData || []) as MatchRow[]) {
+    for (const rawMatch of (missingDateMatchesData || []) as unknown as MatchRow[]) {
       const inferredMatchDate = computeMatchDateFromJornada(rawMatch.jornada);
       if (!inferredMatchDate) continue;
 
@@ -947,7 +1086,7 @@ export const runScheduledMatches = async (
 
       inferredPrepWindowCount += 1;
 
-      const persisted = await persistMissingMatchDate(supabaseAdmin, inferredMatch);
+      const persisted = await persistMissingMatchDate(supabaseAdmin, inferredMatch, selectFields);
       inferredCandidateMatches.push(persisted.match);
       if (persisted.updated) recoveredMatchDateCount += 1;
     }
@@ -955,7 +1094,7 @@ export const runScheduledMatches = async (
 
   const { data: candidateMatchesData, error: candidateMatchesError } = await supabaseAdmin
     .from('matches')
-    .select(MATCH_SELECT_FIELDS)
+    .select(selectFields)
     .eq('played', false)
     .not('match_date', 'is', null)
     .lte('match_date', prepCutoff.toISOString())
@@ -968,7 +1107,7 @@ export const runScheduledMatches = async (
   }
 
   const candidateMatches = [...new Map(
-    [...((candidateMatchesData || []) as MatchRow[]), ...inferredCandidateMatches]
+    [...((candidateMatchesData || []) as unknown as MatchRow[]), ...inferredCandidateMatches]
       .sort(compareMatchesByDate)
       .map((match) => [match.id, match])
   ).values()].slice(0, maxMatches);
@@ -989,6 +1128,12 @@ export const runScheduledMatches = async (
   if (recoveredMatchDateCount > 0) {
     summary.warnings.push(
       `${recoveredMatchDateCount} partidos pendientes recuperaron su match_date automáticamente desde jornada.`
+    );
+  }
+
+  if (!supportsPreparedSimulationColumns) {
+    summary.warnings.push(
+      'Schema legacy detectado en matches: faltan columnas simulated_*. Se omite el precálculo persistido y se cierran directamente los partidos vencidos.'
     );
   }
 
@@ -1020,7 +1165,10 @@ export const runScheduledMatches = async (
   });
 
   const matchesById = new Map<number, MatchRow>(candidateMatches.map((match) => [match.id, match]));
-  const matchesToPrepare = candidateMatches.filter((match) => getPreparedSimulation(match) === null);
+  const preparedByMatchId = new Map<number, PreparedSimulation>();
+  const matchesToPrepare = supportsPreparedSimulationColumns
+    ? candidateMatches.filter((match) => getPreparedSimulation(match) === null)
+    : candidateMatches.filter((match) => isMatchDueBy(match, now));
 
   for (const match of matchesToPrepare) {
     summary.processed += 1;
@@ -1069,24 +1217,32 @@ export const runScheduledMatches = async (
         String(match.away_team_id)
       );
 
-      const prepared = await prepareMatchSimulation(
-        supabaseAdmin,
-        match,
-        {
-          finalHome: simulation.finalScore.home,
-          finalAway: simulation.finalScore.away,
-          events: simulation.events,
-          statsRows: gameStatsRows
-        },
-        now
-      );
+      const preparedSimulation: PreparedSimulation = {
+        finalHome: simulation.finalScore.home,
+        finalAway: simulation.finalScore.away,
+        events: simulation.events,
+        statsRows: gameStatsRows
+      };
 
-      matchesById.set(match.id, prepared.match);
-
-      if (prepared.status === 'ok') {
+      if (!supportsPreparedSimulationColumns) {
+        preparedByMatchId.set(match.id, preparedSimulation);
         summary.simulated += 1;
-      } else if (prepared.status === 'already_played') {
-        summary.alreadyPlayed += 1;
+      } else {
+        const prepared = await prepareMatchSimulation(
+          supabaseAdmin,
+          match,
+          preparedSimulation,
+          now,
+          selectFields
+        );
+
+        matchesById.set(match.id, prepared.match);
+
+        if (prepared.status === 'ok') {
+          summary.simulated += 1;
+        } else if (prepared.status === 'already_played') {
+          summary.alreadyPlayed += 1;
+        }
       }
     } catch (error) {
       summary.errors.push({ matchId: match.id, reason: toErrorText(error) });
@@ -1094,14 +1250,20 @@ export const runScheduledMatches = async (
   }
 
   const matchesToFinalize = Array.from(matchesById.values()).filter(
-    (match) => isMatchDueBy(match, now) && getPreparedSimulation(match) !== null
+    (match) =>
+      isMatchDueBy(match, now) &&
+      (supportsPreparedSimulationColumns
+        ? getPreparedSimulation(match) !== null
+        : preparedByMatchId.has(match.id))
   );
 
   for (const match of matchesToFinalize) {
     summary.processed += 1;
 
     try {
-      const prepared = getPreparedSimulation(match);
+      const prepared = supportsPreparedSimulationColumns
+        ? getPreparedSimulation(match)
+        : (preparedByMatchId.get(match.id) ?? null);
       if (!prepared) {
         summary.skipped += 1;
         summary.errors.push({
@@ -1126,10 +1288,12 @@ export const runScheduledMatches = async (
         summary.finalized += 1;
       }
 
-      try {
-        await clearPreparedSimulation(supabaseAdmin, match.id);
-      } catch (cleanupError) {
-        summary.warnings.push(`match ${match.id}: ${toErrorText(cleanupError)}`);
+      if (supportsPreparedSimulationColumns) {
+        try {
+          await clearPreparedSimulation(supabaseAdmin, match.id);
+        } catch (cleanupError) {
+          summary.warnings.push(`match ${match.id}: ${toErrorText(cleanupError)}`);
+        }
       }
 
       if (result.warning) summary.warnings.push(`match ${match.id}: ${result.warning}`);

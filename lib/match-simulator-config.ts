@@ -6,6 +6,11 @@ export type MatchSimulatorSettings = {
   possessionMaxSeconds: number;
   threePointAttemptRate: number;
   assistRate: number;
+  foulBaseChance: number;
+  shootingFoulRate: number;
+  bonusTeamFoulLimit: number;
+  freeThrowBaseChance: number;
+  freeThrowSkillImpact: number;
   offensiveReboundRate: number;
   baseTwoPointChance: number;
   baseThreePointChance: number;
@@ -61,6 +66,11 @@ export const DEFAULT_MATCH_SIMULATOR_SETTINGS: MatchSimulatorSettings = {
   possessionMaxSeconds: 24,
   threePointAttemptRate: 0.35,
   assistRate: 0.35,
+  foulBaseChance: 18,
+  shootingFoulRate: 0.58,
+  bonusTeamFoulLimit: 5,
+  freeThrowBaseChance: 72,
+  freeThrowSkillImpact: 0.18,
   offensiveReboundRate: 0.55,
   baseTwoPointChance: 51,
   baseThreePointChance: 35,
@@ -98,6 +108,11 @@ export const normalizeMatchSimulatorSettings = (
     possessionMaxSeconds: toInt(input.possessionMaxSeconds, DEFAULT_MATCH_SIMULATOR_SETTINGS.possessionMaxSeconds, 6, 45),
     threePointAttemptRate: toFloat(input.threePointAttemptRate, DEFAULT_MATCH_SIMULATOR_SETTINGS.threePointAttemptRate, 0.05, 0.8),
     assistRate: toFloat(input.assistRate, DEFAULT_MATCH_SIMULATOR_SETTINGS.assistRate, 0.05, 0.95),
+    foulBaseChance: toFloat(input.foulBaseChance, DEFAULT_MATCH_SIMULATOR_SETTINGS.foulBaseChance, 0, 60),
+    shootingFoulRate: toFloat(input.shootingFoulRate, DEFAULT_MATCH_SIMULATOR_SETTINGS.shootingFoulRate, 0.05, 0.95),
+    bonusTeamFoulLimit: toInt(input.bonusTeamFoulLimit, DEFAULT_MATCH_SIMULATOR_SETTINGS.bonusTeamFoulLimit, 3, 8),
+    freeThrowBaseChance: toFloat(input.freeThrowBaseChance, DEFAULT_MATCH_SIMULATOR_SETTINGS.freeThrowBaseChance, 5, 95),
+    freeThrowSkillImpact: toFloat(input.freeThrowSkillImpact, DEFAULT_MATCH_SIMULATOR_SETTINGS.freeThrowSkillImpact, 0, 1),
     offensiveReboundRate: toFloat(input.offensiveReboundRate, DEFAULT_MATCH_SIMULATOR_SETTINGS.offensiveReboundRate, 0.1, 0.9),
     baseTwoPointChance: toFloat(input.baseTwoPointChance, DEFAULT_MATCH_SIMULATOR_SETTINGS.baseTwoPointChance, 5, 95),
     baseThreePointChance: toFloat(input.baseThreePointChance, DEFAULT_MATCH_SIMULATOR_SETTINGS.baseThreePointChance, 5, 95),
