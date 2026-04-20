@@ -9,6 +9,7 @@ import {
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
 import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
+import { advanceGroupPlayoffsForMatch } from '@/lib/competition-progression';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1294,6 +1295,15 @@ export const runScheduledMatches = async (
         } catch (cleanupError) {
           summary.warnings.push(`match ${match.id}: ${toErrorText(cleanupError)}`);
         }
+      }
+
+      try {
+        const progressionResult = await advanceGroupPlayoffsForMatch(supabaseAdmin, match.id);
+        if (progressionResult.createdMatches > 0 || progressionResult.status === 'ok') {
+          summary.warnings.push(`match ${match.id}: ${progressionResult.message}`);
+        }
+      } catch (progressionError) {
+        summary.warnings.push(`match ${match.id}: ${toErrorText(progressionError)}`);
       }
 
       if (result.warning) summary.warnings.push(`match ${match.id}: ${result.warning}`);
