@@ -13,6 +13,7 @@ type MatchTeam = { id: TeamId; nombre: string; color_primario?: string; escudo_f
 type MatchRow = {
   id: number;
   jornada: number;
+  fase?: string | null;
   home_score: number;
   away_score: number;
   played: boolean;
@@ -23,6 +24,7 @@ type MatchRow = {
 type DbMatchRow = {
   id: number;
   jornada: number;
+  fase?: string | null;
   home_team_id: TeamId;
   away_team_id: TeamId;
   home_score: number;
@@ -31,6 +33,12 @@ type DbMatchRow = {
   match_date?: string | null;
 };
 const buildFallbackTeam = (id: TeamId): MatchTeam => ({ id, nombre: `Equipo ${id}` });
+const normalizePhase = (phase?: string | null) => String(phase || 'REGULAR').trim().toUpperCase();
+const formatPhaseLabel = (phase?: string | null) =>
+  normalizePhase(phase)
+    .replace(/_/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
   if (typeof error === 'string') return error;
@@ -57,6 +65,7 @@ function EscudoSVG({ forma, color, className }: { forma?: string | null; color?:
 export default function CalendarPage() {
   const [loading, setLoading] = useState(true);
   const [jornada, setJornada] = useState(1);
+  const [maxRound, setMaxRound] = useState(14);
   const [matches, setMatches] = useState<MatchRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -96,9 +105,9 @@ export default function CalendarPage() {
     return (data || []).map(t => String(t.id));
   }, []);
 
-  const getCurrentRoundForGroup = useCallback(async (grupoId: number) => {
+  const getRoundStateForGroup = useCallback(async (grupoId: number) => {
     const teamIds = await getTeamIdsForGroup(grupoId);
-    if (teamIds.length === 0) return 1;
+    if (teamIds.length === 0) return { currentRound: 1, maxRound: 14 };
 
     const { data: allMatches, error } = await supabase
       .from('matches')
@@ -107,7 +116,7 @@ export default function CalendarPage() {
 
     if (error) {
       console.warn('No se pudo calcular la jornada actual del grupo.', error);
-      return 1;
+      return { currentRound: 1, maxRound: 14 };
     }
 
     const byRound = new Map<number, { total: number; played: number }>();
@@ -119,11 +128,23 @@ export default function CalendarPage() {
       byRound.set(round, curr);
     });
 
-    for (let r = 1; r <= 14; r++) {
+    const rounds = [...byRound.keys()].filter((round) => Number.isFinite(round) && round > 0);
+    const detectedMaxRound = rounds.length > 0 ? Math.max(...rounds) : 14;
+
+    for (let r = 1; r <= detectedMaxRound; r++) {
       const info = byRound.get(r);
-      if (!info || info.played < info.total) return r;
+      if (!info || info.played < info.total) {
+        return {
+          currentRound: r,
+          maxRound: detectedMaxRound
+        };
+      }
     }
-    return 14;
+
+    return {
+      currentRound: detectedMaxRound,
+      maxRound: detectedMaxRound
+    };
   }, [getTeamIdsForGroup]);
 
   const loadMatches = useCallback(async (grupoId: number, j: number) => {
@@ -138,7 +159,7 @@ export default function CalendarPage() {
 
       const { data: partidos, error } = await supabase
         .from('matches')
-        .select('id, jornada, home_team_id, away_team_id, home_score, away_score, played, match_date')
+        .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
         .eq('jornada', j)
         .in('home_team_id', teamIds)
         .order('id', { ascending: true });
@@ -178,6 +199,7 @@ export default function CalendarPage() {
       const normalizedMatches: MatchRow[] = rawMatches.map((match) => ({
         id: match.id,
         jornada: match.jornada,
+        fase: match.fase || null,
         home_score: match.home_score,
         away_score: match.away_score,
         played: match.played,
@@ -236,16 +258,17 @@ export default function CalendarPage() {
       setSelectedGroupId(fallbackGroupId);
 
       if (fallbackGroupId) {
-        const currentRound = await getCurrentRoundForGroup(fallbackGroupId);
-        setJornada(currentRound);
-        await loadMatches(fallbackGroupId, currentRound);
+        const roundState = await getRoundStateForGroup(fallbackGroupId);
+        setJornada(roundState.currentRound);
+        setMaxRound(roundState.maxRound);
+        await loadMatches(fallbackGroupId, roundState.currentRound);
       }
     } catch (e) {
       console.warn('Error inicializando calendario:', e);
     } finally {
       setLoading(false);
     }
-  }, [getCurrentRoundForGroup, loadMatches]);
+  }, [getRoundStateForGroup, loadMatches]);
 
   useEffect(() => { void init(); }, [init]);
 
@@ -263,29 +286,39 @@ export default function CalendarPage() {
     }
     let isMounted = true;
     (async () => {
-      const current = await getCurrentRoundForGroup(selectedGroupId);
-      if (isMounted) setJornada(current);
+      const roundState = await getRoundStateForGroup(selectedGroupId);
+      if (isMounted) {
+        setJornada(roundState.currentRound);
+        setMaxRound(roundState.maxRound);
+      }
     })();
     return () => { isMounted = false; };
-  }, [selectedGroupId, getCurrentRoundForGroup]);
+  }, [selectedGroupId, getRoundStateForGroup]);
 
   useEffect(() => {
     if (!selectedGroupId) return;
     void loadMatches(selectedGroupId, jornada);
   }, [selectedGroupId, jornada, loadMatches]);
 
-  const nextRound = () => setJornada(p => Math.min(14, p + 1));
+  const nextRound = () => setJornada(p => Math.min(maxRound, p + 1));
   const prevRound = () => setJornada(p => Math.max(1, p - 1));
 
   const resetToDefaults = async () => {
     if (!myLeagueId || !myGroupId) return;
     setSelectedLeagueId(myLeagueId);
     setSelectedGroupId(myGroupId);
-    const current = await getCurrentRoundForGroup(myGroupId);
-    setJornada(current);
+    const roundState = await getRoundStateForGroup(myGroupId);
+    setJornada(roundState.currentRound);
+    setMaxRound(roundState.maxRound);
   };
 
   const isShowingDefault = selectedGroupId === myGroupId;
+  const currentPhaseLabel = useMemo(() => {
+    const distinctPhases = [...new Set(matches.map((match) => normalizePhase(match.fase)))];
+    if (distinctPhases.length !== 1) return null;
+    if (distinctPhases[0] === 'REGULAR') return null;
+    return formatPhaseLabel(distinctPhases[0]);
+  }, [matches]);
 
   const getJornadaDateStr = (jRound: number) => {
     const baseDate = new Date(2026, 2, 4, 18, 30);
@@ -385,8 +418,13 @@ export default function CalendarPage() {
               <div className="text-center">
                 <h2 className="text-2xl font-black uppercase tracking-tighter text-white">Jornada {jornada}</h2>
                 <p className="text-[11px] text-slate-400 font-bold uppercase tracking-widest mt-1">{getJornadaDateStr(jornada)}</p>
+                {currentPhaseLabel && (
+                  <p className="text-[10px] text-orange-300 font-black uppercase tracking-widest mt-2">
+                    {currentPhaseLabel}
+                  </p>
+                )}
               </div>
-              <button onClick={nextRound} disabled={jornada === 14} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/5 disabled:opacity-30 transition-all">
+              <button onClick={nextRound} disabled={jornada === maxRound} className="w-12 h-12 flex items-center justify-center rounded-full hover:bg-white/5 disabled:opacity-30 transition-all">
                 <ChevronRight />
               </button>
             </div>
