@@ -1236,6 +1236,45 @@ function MatchEnginePageContent() {
     }
   };
 
+  const advancePlayoffsAfterMatch = async (matchId: number) => {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError) {
+      return `No se pudo obtener la sesión para avanzar playoffs: ${sessionError.message}`;
+    }
+
+    const accessToken = sessionData.session?.access_token;
+    if (!accessToken) {
+      return 'No se encontró token de sesión para avanzar playoffs.';
+    }
+
+    const response = await fetch('/api/competition/advance-playoffs', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`
+      },
+      body: JSON.stringify({ matchId })
+    });
+
+    const payload = (await response.json().catch(() => null)) as
+      | {
+          ok?: boolean;
+          error?: string;
+          result?: { message?: string; createdMatches?: number; status?: 'ok' | 'skipped' };
+        }
+      | null;
+
+    if (!response.ok || !payload?.ok) {
+      return payload?.error || 'No se pudo avanzar la competición tras cerrar el partido.';
+    }
+
+    if (payload.result?.status === 'ok' && payload.result?.message) {
+      return payload.result.message;
+    }
+
+    return null;
+  };
+
   const prepareSimulationIfNeeded = async () => {
     if (!currentMatch || !homeTeam || !awayTeam) return false;
     if (matchEvents.length > 0) return true;
@@ -1277,8 +1316,9 @@ function MatchEnginePageContent() {
       setDisplayedAwayLineup(result.finalAwayLineup);
 
       const persistence = await finalizeMatchPersistence(currentMatch, result);
+      const progressionWarning = await advancePlayoffsAfterMatch(currentMatch.id);
       setCurrentMatch(persistence.updatedMatch);
-      setWarning(persistence.warning || null);
+      setWarning([persistence.warning, progressionWarning].filter(Boolean).join(' ').trim() || null);
       setDisplayedHomeScore(0);
       setDisplayedAwayScore(0);
       setDisplayedQuarter('Q1');
