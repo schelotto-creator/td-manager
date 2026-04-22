@@ -63,6 +63,11 @@ type BracketMatchCardData = {
   homeScore?: number;
   awayScore?: number;
   footer?: string;
+  activationBlockedReason?: string;
+};
+type EnsureGroupPlayoffsResult = {
+  created: boolean;
+  viewerMatchId: number | null;
 };
 
 const PLAYOFF_PHASE = {
@@ -315,6 +320,11 @@ function BracketMatchCard({
           </button>
         </div>
       )}
+      {!match.matchId && match.isMyMatch && !match.canActivateProjected && match.activationBlockedReason && (
+        <p className="mt-4 text-center text-[10px] font-black uppercase tracking-widest text-amber-300">
+          {match.activationBlockedReason}
+        </p>
+      )}
     </div>
   );
 }
@@ -441,13 +451,13 @@ export default function LeaguesExplorer() {
   const [activeTab, setActiveTab] = useState<PlayoffTab>('standings');
   const [activatingBracketId, setActivatingBracketId] = useState<string | null>(null);
 
-  const ensureGroupPlayoffs = useCallback(async (groupId: number) => {
+  const ensureGroupPlayoffs = useCallback(async (groupId: number): Promise<EnsureGroupPlayoffsResult> => {
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError) return false;
+      if (sessionError) return { created: false, viewerMatchId: null };
 
       const accessToken = sessionData.session?.access_token;
-      if (!accessToken) return false;
+      if (!accessToken) return { created: false, viewerMatchId: null };
 
       const response = await fetch('/api/competition/ensure-group-playoffs', {
         method: 'POST',
@@ -462,13 +472,21 @@ export default function LeaguesExplorer() {
         | {
             ok?: boolean;
             result?: { createdMatches?: number; status?: 'ok' | 'skipped' };
+            viewerMatchId?: number | null;
           }
         | null;
 
-      if (!response.ok || !payload?.ok) return false;
-      return Number(payload.result?.createdMatches || 0) > 0;
+      if (!response.ok || !payload?.ok) {
+        return { created: false, viewerMatchId: null };
+      }
+
+      const viewerMatchId = Number(payload.viewerMatchId || 0);
+      return {
+        created: Number(payload.result?.createdMatches || 0) > 0,
+        viewerMatchId: viewerMatchId > 0 ? viewerMatchId : null
+      };
     } catch {
-      return false;
+      return { created: false, viewerMatchId: null };
     }
   }, []);
 
@@ -621,8 +639,8 @@ export default function LeaguesExplorer() {
 
       const regularSeasonComplete = regularMatches.length > 0 && playedRegularMatches.length === regularMatches.length;
       if (baseTeams.length >= 8 && regularSeasonComplete) {
-        const created = await ensureGroupPlayoffs(grupoId);
-        if (created) {
+        const ensured = await ensureGroupPlayoffs(grupoId);
+        if (ensured.created) {
           await loadStandings(grupoId);
           return;
         }
@@ -696,13 +714,18 @@ export default function LeaguesExplorer() {
     setLoadError(null);
 
     try {
-      await ensureGroupPlayoffs(selectedGroupId);
+      const ensured = await ensureGroupPlayoffs(selectedGroupId);
+      if (ensured.viewerMatchId) {
+        router.push(`/match?matchId=${ensured.viewerMatchId}`);
+        return;
+      }
 
       const { data: officialMatches, error } = await supabase
         .from('matches')
-        .select('id, fase, home_team_id, away_team_id')
+        .select('id, jornada, fase, home_team_id, away_team_id')
         .eq('fase', match.projectedPhase)
         .or(`home_team_id.eq.${myClubId},away_team_id.eq.${myClubId}`)
+        .order('jornada', { ascending: false })
         .order('id', { ascending: false })
         .limit(1);
 
@@ -810,13 +833,21 @@ export default function LeaguesExplorer() {
       );
     }
 
-    return projectedPromotionPairings.map((pairing, index) => ({
-      ...buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`),
-      canActivateProjected: Boolean(myClubId && [pairing.home?.id, pairing.away?.id].includes(myClubId)),
-      activatingProjected: activatingBracketId === `projected-Semifinal ${index + 1}-${pairing.homeSeed}-${pairing.awaySeed}`,
-      projectedPhase: PLAYOFF_PHASE.PROMO_SF
-    }));
-  }, [officialPromotionSemifinals, projectedPromotionPairings, teamDirectory, myClubId, activatingBracketId]);
+    return projectedPromotionPairings.map((pairing, index) => {
+      const isMyProjectedMatch = Boolean(myClubId && [pairing.home?.id, pairing.away?.id].includes(myClubId));
+
+      return {
+        ...buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`),
+        isMyMatch: isMyProjectedMatch,
+        canActivateProjected: regularSeasonComplete && isMyProjectedMatch,
+        activatingProjected: activatingBracketId === `projected-Semifinal ${index + 1}-${pairing.homeSeed}-${pairing.awaySeed}`,
+        projectedPhase: PLAYOFF_PHASE.PROMO_SF,
+        activationBlockedReason: isMyProjectedMatch && !regularSeasonComplete
+          ? 'Disponible al cerrar la fase regular.'
+          : undefined
+      };
+    });
+  }, [officialPromotionSemifinals, projectedPromotionPairings, teamDirectory, myClubId, activatingBracketId, regularSeasonComplete]);
 
   const relegationSemifinalCards = useMemo(() => {
     if (officialRelegationSemifinals.length > 0) {
@@ -825,13 +856,21 @@ export default function LeaguesExplorer() {
       );
     }
 
-    return projectedSurvivalPairings.map((pairing, index) => ({
-      ...buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`),
-      canActivateProjected: Boolean(myClubId && [pairing.home?.id, pairing.away?.id].includes(myClubId)),
-      activatingProjected: activatingBracketId === `projected-Semifinal ${index + 1}-${pairing.homeSeed}-${pairing.awaySeed}`,
-      projectedPhase: PLAYOFF_PHASE.RELEG_SF
-    }));
-  }, [officialRelegationSemifinals, projectedSurvivalPairings, teamDirectory, myClubId, activatingBracketId]);
+    return projectedSurvivalPairings.map((pairing, index) => {
+      const isMyProjectedMatch = Boolean(myClubId && [pairing.home?.id, pairing.away?.id].includes(myClubId));
+
+      return {
+        ...buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`),
+        isMyMatch: isMyProjectedMatch,
+        canActivateProjected: regularSeasonComplete && isMyProjectedMatch,
+        activatingProjected: activatingBracketId === `projected-Semifinal ${index + 1}-${pairing.homeSeed}-${pairing.awaySeed}`,
+        projectedPhase: PLAYOFF_PHASE.RELEG_SF,
+        activationBlockedReason: isMyProjectedMatch && !regularSeasonComplete
+          ? 'Disponible al cerrar la fase regular.'
+          : undefined
+      };
+    });
+  }, [officialRelegationSemifinals, projectedSurvivalPairings, teamDirectory, myClubId, activatingBracketId, regularSeasonComplete]);
 
   const promotionFinalCard = useMemo<BracketMatchCardData>(() => {
     if (officialPromotionFinal) {
