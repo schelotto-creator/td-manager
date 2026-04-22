@@ -47,6 +47,7 @@ El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que e
 ### Variables de entorno requeridas
 
 - `NEXT_PUBLIC_SUPABASE_URL` (o `SUPABASE_URL`)
+- `NEXT_PUBLIC_SUPABASE_ANON_KEY` (obligatoria para las páginas cliente que usan Supabase)
 - `SUPABASE_SERVICE_ROLE_KEY`
 - `CRON_SECRET` (recomendado en producción)
 - `GITHUB_TOKEN` (necesario para `POST /api/github/sync` desde `/admin`)
