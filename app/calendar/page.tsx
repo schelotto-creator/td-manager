@@ -236,6 +236,37 @@ export default function CalendarPage() {
     [groups, myGroupId]
   );
 
+  const ensureGroupPlayoffs = useCallback(async (groupId: number) => {
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) return false;
+
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) return false;
+
+      const response = await fetch('/api/competition/ensure-group-playoffs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({ groupId })
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            result?: { createdMatches?: number; status?: 'ok' | 'skipped' };
+          }
+        | null;
+
+      if (!response.ok || !payload?.ok) return false;
+      return Number(payload.result?.createdMatches || 0) > 0;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const fetchGroupCalendarContext = useCallback(async (grupoId: number): Promise<GroupCalendarContext> => {
     const { data: teamsData, error: teamsError } = await supabase
       .from('clubes')
@@ -445,13 +476,26 @@ export default function CalendarPage() {
     setLoading(true);
     setLoadError(null);
     try {
-      const context = await fetchGroupCalendarContext(grupoId);
+      let context = await fetchGroupCalendarContext(grupoId);
       if (context.standings.length === 0) {
         setMatches([]);
         return;
       }
 
-      const rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
+      let rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
+      const isEmptyPlayoffSlot =
+        context.hasPlayoffSlots &&
+        j > context.regularMaxRound &&
+        rawMatches.length === 0;
+
+      if (isEmptyPlayoffSlot) {
+        const created = await ensureGroupPlayoffs(grupoId);
+        if (created) {
+          context = await fetchGroupCalendarContext(grupoId);
+          rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
+        }
+      }
+
       if (rawMatches.length === 0) {
         setMatches(buildProjectedPlayoffMatches(context, j));
         return;
@@ -480,7 +524,7 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, [fetchGroupCalendarContext]);
+  }, [ensureGroupPlayoffs, fetchGroupCalendarContext]);
 
   const init = useCallback(async () => {
     setLoading(true);
