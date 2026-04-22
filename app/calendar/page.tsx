@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { CalendarDays, ChevronLeft, ChevronRight, Activity, Trophy, Play, Shield, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number; };
@@ -199,11 +200,13 @@ function EscudoSVG({ forma, color, className }: { forma?: string | null; color?:
 }
 
 export default function CalendarPage() {
+  const router = useRouter();
   const [loading, setLoading] = useState(true);
   const [jornada, setJornada] = useState(1);
   const [maxRound, setMaxRound] = useState(14);
   const [matches, setMatches] = useState<CalendarMatchRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [activatingMatchEntryId, setActivatingMatchEntryId] = useState<string | null>(null);
 
   const [leagues, setLeagues] = useState<LigaRow[]>([]);
   const [groups, setGroups] = useState<GrupoRow[]>([]);
@@ -430,6 +433,36 @@ export default function CalendarPage() {
       hasPlayoffSlots
     };
   }, []);
+
+  const activateProjectedMatch = useCallback(async (groupId: number, round: number, entryId: string) => {
+    if (!myClubId) return;
+
+    setActivatingMatchEntryId(entryId);
+    setLoadError(null);
+
+    try {
+      const created = await ensureGroupPlayoffs(groupId);
+      const refreshedContext = await fetchGroupCalendarContext(groupId);
+      const officialMatch = refreshedContext.allMatches.find(
+        (match) =>
+          Number(match.jornada || 0) === round &&
+          [String(match.home_team_id), String(match.away_team_id)].includes(myClubId)
+      );
+
+      if (officialMatch?.id) {
+        router.push(`/match?matchId=${officialMatch.id}`);
+        return;
+      }
+
+      if (!created) {
+        setLoadError('El cruce oficial todavía no está listo. Recarga en unos segundos.');
+      }
+    } catch (error) {
+      setLoadError(toErrorText(error));
+    } finally {
+      setActivatingMatchEntryId(null);
+    }
+  }, [ensureGroupPlayoffs, fetchGroupCalendarContext, myClubId, router]);
 
   const getRoundStateForGroup = useCallback(async (grupoId: number) => {
     try {
@@ -825,6 +858,16 @@ export default function CalendarPage() {
                         <span className="mt-2 text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">
                           {m.isProjected ? 'Slot: ' : 'Auto: '}{formatKickoff(m)}
                         </span>
+                        {isMyMatch && m.isProjected && selectedGroupId && (
+                          <button
+                            onClick={() => void activateProjectedMatch(selectedGroupId, m.jornada, m.entryId)}
+                            disabled={activatingMatchEntryId === m.entryId}
+                            className="mt-3 inline-flex items-center gap-1 text-[10px] font-black uppercase text-cyan-300 hover:text-cyan-200 transition-colors bg-cyan-500/10 px-3 py-1.5 rounded-lg border border-cyan-500/20 disabled:opacity-50"
+                          >
+                            {activatingMatchEntryId === m.entryId ? <Activity size={10} className="animate-spin" /> : <Play size={10} fill="currentColor" />}
+                            {activatingMatchEntryId === m.entryId ? 'Activando...' : 'Entrar al directo'}
+                          </button>
+                        )}
                         {isMyMatch && !m.isProjected && m.id && (
                           <div className="mt-3 flex flex-wrap justify-center gap-2">
                             <Link href={`/tactics?matchId=${m.id}`} className="flex items-center gap-1 text-[10px] font-black text-yellow-500 uppercase hover:text-yellow-400 transition-colors bg-yellow-500/10 px-3 py-1.5 rounded-lg border border-yellow-500/20">
