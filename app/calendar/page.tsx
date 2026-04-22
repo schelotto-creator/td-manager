@@ -30,6 +30,8 @@ type CalendarMatchRow = {
   away_team: MatchTeam;
   isProjected?: boolean;
   projectedLabel?: string | null;
+  canActivateProjected?: boolean;
+  activationBlockedReason?: string | null;
 };
 type DbMatchRow = {
   id: number;
@@ -55,10 +57,15 @@ type GroupCalendarContext = {
   standings: TeamStanding[];
   actualMaxRound: number;
   regularMaxRound: number;
+  regularSeasonComplete: boolean;
   plannedMaxRound: number;
   playoffSemiRound: number;
   playoffFinalRound: number;
   hasPlayoffSlots: boolean;
+};
+type EnsureGroupPlayoffsResult = {
+  created: boolean;
+  viewerMatchId: number | null;
 };
 const buildFallbackTeam = (id: TeamId): MatchTeam => ({ id, nombre: `Equipo ${id}` });
 const normalizePhase = (phase?: string | null) => String(phase || 'REGULAR').trim().toUpperCase();
@@ -119,6 +126,7 @@ const buildProjectedPlayoffMatches = (
   if (!context.hasPlayoffSlots || context.standings.length < 8) return [];
 
   if (round === context.playoffSemiRound) {
+    const semifinalsReady = context.regularSeasonComplete;
     const promotionPairings = buildBracketPairings(context.standings.slice(0, 4), 1);
     const relegationPairings = buildBracketPairings(context.standings.slice(4, 8), 5);
 
@@ -134,7 +142,9 @@ const buildProjectedPlayoffMatches = (
         home_team: pairing.home || buildFallbackTeam(`projected-promo-home-${index}`),
         away_team: pairing.away || buildFallbackTeam(`projected-promo-away-${index}`),
         isProjected: true,
-        projectedLabel: `Ascenso · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`
+        projectedLabel: `Ascenso · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`,
+        canActivateProjected: semifinalsReady,
+        activationBlockedReason: semifinalsReady ? null : 'Se activa al cerrar la fase regular'
       })),
       ...relegationPairings.map((pairing, index) => ({
         entryId: `projected-releg-sf-${round}-${index}`,
@@ -147,7 +157,9 @@ const buildProjectedPlayoffMatches = (
         home_team: pairing.home || buildFallbackTeam(`projected-releg-home-${index}`),
         away_team: pairing.away || buildFallbackTeam(`projected-releg-away-${index}`),
         isProjected: true,
-        projectedLabel: `Permanencia · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`
+        projectedLabel: `Permanencia · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`,
+        canActivateProjected: semifinalsReady,
+        activationBlockedReason: semifinalsReady ? null : 'Se activa al cerrar la fase regular'
       }))
     ];
   }
@@ -165,7 +177,9 @@ const buildProjectedPlayoffMatches = (
         home_team: { id: 'promo-finalist-1', nombre: 'Ganador SF 1' },
         away_team: { id: 'promo-finalist-2', nombre: 'Ganador SF 2' },
         isProjected: true,
-        projectedLabel: 'Final ascenso · 1º-4º'
+        projectedLabel: 'Final ascenso · 1º-4º',
+        canActivateProjected: false,
+        activationBlockedReason: 'Se define tras las semifinales oficiales'
       },
       {
         entryId: `projected-releg-final-${round}`,
@@ -178,7 +192,9 @@ const buildProjectedPlayoffMatches = (
         home_team: { id: 'releg-finalist-1', nombre: 'Ganador SF 1' },
         away_team: { id: 'releg-finalist-2', nombre: 'Ganador SF 2' },
         isProjected: true,
-        projectedLabel: 'Final permanencia · 5º-8º'
+        projectedLabel: 'Final permanencia · 5º-8º',
+        canActivateProjected: false,
+        activationBlockedReason: 'Se define tras las semifinales oficiales'
       }
     ];
   }
@@ -239,13 +255,13 @@ export default function CalendarPage() {
     [groups, myGroupId]
   );
 
-  const ensureGroupPlayoffs = useCallback(async (groupId: number) => {
+  const ensureGroupPlayoffs = useCallback(async (groupId: number): Promise<EnsureGroupPlayoffsResult> => {
     try {
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-      if (sessionError) return false;
+      if (sessionError) return { created: false, viewerMatchId: null };
 
       const accessToken = sessionData.session?.access_token;
-      if (!accessToken) return false;
+      if (!accessToken) return { created: false, viewerMatchId: null };
 
       const response = await fetch('/api/competition/ensure-group-playoffs', {
         method: 'POST',
@@ -260,13 +276,21 @@ export default function CalendarPage() {
         | {
             ok?: boolean;
             result?: { createdMatches?: number; status?: 'ok' | 'skipped' };
+            viewerMatchId?: number | null;
           }
         | null;
 
-      if (!response.ok || !payload?.ok) return false;
-      return Number(payload.result?.createdMatches || 0) > 0;
+      if (!response.ok || !payload?.ok) {
+        return { created: false, viewerMatchId: null };
+      }
+
+      const viewerMatchId = Number(payload.viewerMatchId || 0);
+      return {
+        created: Number(payload.result?.createdMatches || 0) > 0,
+        viewerMatchId: viewerMatchId > 0 ? viewerMatchId : null
+      };
     } catch {
-      return false;
+      return { created: false, viewerMatchId: null };
     }
   }, []);
 
@@ -319,6 +343,7 @@ export default function CalendarPage() {
         standings: [],
         actualMaxRound: 0,
         regularMaxRound: 0,
+        regularSeasonComplete: false,
         plannedMaxRound: 14,
         playoffSemiRound: 15,
         playoffFinalRound: 16,
@@ -354,6 +379,7 @@ export default function CalendarPage() {
     );
 
     const regularMatches = allMatches.filter((match) => normalizePhase(match.fase) === 'REGULAR');
+    const regularSeasonComplete = regularMatches.length > 0 && regularMatches.every((match) => match.played);
     const statsByTeam = new Map<TeamId, { pj: number; v: number; d: number; pts: number }>(
       teamIds.map((id) => [id, { pj: 0, v: 0, d: 0, pts: 0 }])
     );
@@ -427,6 +453,7 @@ export default function CalendarPage() {
       standings,
       actualMaxRound,
       regularMaxRound,
+      regularSeasonComplete,
       plannedMaxRound,
       playoffSemiRound,
       playoffFinalRound,
@@ -441,7 +468,12 @@ export default function CalendarPage() {
     setLoadError(null);
 
     try {
-      const created = await ensureGroupPlayoffs(groupId);
+      const ensured = await ensureGroupPlayoffs(groupId);
+      if (ensured.viewerMatchId) {
+        router.push(`/match?matchId=${ensured.viewerMatchId}`);
+        return;
+      }
+
       const refreshedContext = await fetchGroupCalendarContext(groupId);
       const officialMatch = refreshedContext.allMatches.find(
         (match) =>
@@ -454,7 +486,7 @@ export default function CalendarPage() {
         return;
       }
 
-      if (!created) {
+      if (!ensured.created) {
         setLoadError('El cruce oficial todavía no está listo. Recarga en unos segundos.');
       }
     } catch (error) {
@@ -522,8 +554,8 @@ export default function CalendarPage() {
         rawMatches.length === 0;
 
       if (isEmptyPlayoffSlot) {
-        const created = await ensureGroupPlayoffs(grupoId);
-        if (created) {
+        const ensured = await ensureGroupPlayoffs(grupoId);
+        if (ensured.created || ensured.viewerMatchId) {
           context = await fetchGroupCalendarContext(grupoId);
           rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
         }
@@ -858,7 +890,7 @@ export default function CalendarPage() {
                         <span className="mt-2 text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">
                           {m.isProjected ? 'Slot: ' : 'Auto: '}{formatKickoff(m)}
                         </span>
-                        {isMyMatch && m.isProjected && selectedGroupId && (
+                        {isMyMatch && m.isProjected && selectedGroupId && m.canActivateProjected && (
                           <button
                             onClick={() => void activateProjectedMatch(selectedGroupId, m.jornada, m.entryId)}
                             disabled={activatingMatchEntryId === m.entryId}
@@ -867,6 +899,11 @@ export default function CalendarPage() {
                             {activatingMatchEntryId === m.entryId ? <Activity size={10} className="animate-spin" /> : <Play size={10} fill="currentColor" />}
                             {activatingMatchEntryId === m.entryId ? 'Activando...' : 'Entrar al directo'}
                           </button>
+                        )}
+                        {isMyMatch && m.isProjected && !m.canActivateProjected && m.activationBlockedReason && (
+                          <span className="mt-3 text-[9px] text-amber-300 font-bold uppercase tracking-widest text-center">
+                            {m.activationBlockedReason}
+                          </span>
                         )}
                         {isMyMatch && !m.isProjected && m.id && (
                           <div className="mt-3 flex flex-wrap justify-center gap-2">
