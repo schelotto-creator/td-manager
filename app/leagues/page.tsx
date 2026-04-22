@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Globe, Medal, Trophy, ArrowUpCircle, ArrowDownCircle, Filter, RotateCcw } from 'lucide-react';
+import { Globe, Medal, Trophy, Play, Shield, ArrowUpCircle, ArrowDownCircle, Filter, RotateCcw } from 'lucide-react';
+import Link from 'next/link';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number };
@@ -48,10 +49,12 @@ type PlayoffTab = 'standings' | 'playoffs';
 type BracketMatchCardData = {
   id: string;
   label: string;
+  matchId?: number;
   homeTeam?: TeamRow;
   awayTeam?: TeamRow;
   homeSeed?: string;
   awaySeed?: string;
+  isMyMatch?: boolean;
   played?: boolean;
   homeScore?: number;
   awayScore?: number;
@@ -155,12 +158,15 @@ const getWinnerTeamFromMatch = (
 const buildOfficialMatchCard = (
   match: CompetitionMatchRow,
   teamDirectory: Record<TeamId, TeamRow>,
-  label: string
+  label: string,
+  myClubId: TeamId | null
 ): BracketMatchCardData => ({
   id: `official-${match.id}`,
   label,
+  matchId: match.id,
   homeTeam: getTeamFromDirectory(teamDirectory, match.home_team_id),
   awayTeam: getTeamFromDirectory(teamDirectory, match.away_team_id),
+  isMyMatch: Boolean(myClubId && (String(match.home_team_id) === myClubId || String(match.away_team_id) === myClubId)),
   played: match.played,
   homeScore: Number(match.home_score || 0),
   awayScore: Number(match.away_score || 0),
@@ -262,6 +268,34 @@ function BracketMatchCard({
         <TeamBadge team={match.homeTeam} seed={match.homeSeed} tone={tone} />
         <TeamBadge team={match.awayTeam} seed={match.awaySeed} tone={tone} />
       </div>
+
+      {match.matchId && match.played && (
+        <div className="mt-4 flex justify-center">
+          <Link
+            href={`/match?matchId=${match.matchId}`}
+            className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-cyan-400 hover:text-cyan-300 transition-colors bg-cyan-500/10 px-3 py-1.5 rounded-lg border border-cyan-500/20"
+          >
+            <Play size={10} fill="currentColor" /> Ver Repetición
+          </Link>
+        </div>
+      )}
+
+      {match.matchId && !match.played && match.isMyMatch && (
+        <div className="mt-4 flex flex-wrap justify-center gap-2">
+          <Link
+            href={`/tactics?matchId=${match.matchId}`}
+            className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-yellow-400 hover:text-yellow-300 transition-colors bg-yellow-500/10 px-3 py-1.5 rounded-lg border border-yellow-500/20"
+          >
+            <Shield size={10} /> Preparar
+          </Link>
+          <Link
+            href={`/match?matchId=${match.matchId}`}
+            className="inline-flex items-center gap-1 text-[10px] font-black uppercase text-emerald-400 hover:text-emerald-300 transition-colors bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20"
+          >
+            <Play size={10} fill="currentColor" /> Seguir
+          </Link>
+        </div>
+      )}
     </div>
   );
 }
@@ -673,30 +707,30 @@ export default function LeaguesExplorer() {
   const promotionSemifinalCards = useMemo(() => {
     if (officialPromotionSemifinals.length > 0) {
       return officialPromotionSemifinals.map((match, index) =>
-        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`)
+        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`, myClubId)
       );
     }
 
     return projectedPromotionPairings.map((pairing, index) =>
       buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`)
     );
-  }, [officialPromotionSemifinals, projectedPromotionPairings, teamDirectory]);
+  }, [officialPromotionSemifinals, projectedPromotionPairings, teamDirectory, myClubId]);
 
   const relegationSemifinalCards = useMemo(() => {
     if (officialRelegationSemifinals.length > 0) {
       return officialRelegationSemifinals.map((match, index) =>
-        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`)
+        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`, myClubId)
       );
     }
 
     return projectedSurvivalPairings.map((pairing, index) =>
       buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`)
     );
-  }, [officialRelegationSemifinals, projectedSurvivalPairings, teamDirectory]);
+  }, [officialRelegationSemifinals, projectedSurvivalPairings, teamDirectory, myClubId]);
 
   const promotionFinalCard = useMemo<BracketMatchCardData>(() => {
     if (officialPromotionFinal) {
-      return buildOfficialMatchCard(officialPromotionFinal, teamDirectory, 'Final');
+      return buildOfficialMatchCard(officialPromotionFinal, teamDirectory, 'Final', myClubId);
     }
 
     return {
@@ -713,11 +747,11 @@ export default function LeaguesExplorer() {
       played: false,
       footer: hasOfficialPlayoffs ? 'Pendiente de asignación oficial' : 'Cruce estimado según clasificación actual'
     };
-  }, [officialPromotionFinal, officialPromotionSemifinals, teamDirectory, hasOfficialPlayoffs]);
+  }, [officialPromotionFinal, officialPromotionSemifinals, teamDirectory, hasOfficialPlayoffs, myClubId]);
 
   const relegationFinalCard = useMemo<BracketMatchCardData>(() => {
     if (officialRelegationFinal) {
-      return buildOfficialMatchCard(officialRelegationFinal, teamDirectory, 'Final');
+      return buildOfficialMatchCard(officialRelegationFinal, teamDirectory, 'Final', myClubId);
     }
 
     return {
@@ -734,7 +768,7 @@ export default function LeaguesExplorer() {
       played: false,
       footer: hasOfficialPlayoffs ? 'Pendiente de asignación oficial' : 'Cruce estimado según clasificación actual'
     };
-  }, [officialRelegationFinal, officialRelegationSemifinals, teamDirectory, hasOfficialPlayoffs]);
+  }, [officialRelegationFinal, officialRelegationSemifinals, teamDirectory, hasOfficialPlayoffs, myClubId]);
 
   const playoffsModeLabel = !regularSeasonComplete
     ? 'Pendiente de cierre regular'
