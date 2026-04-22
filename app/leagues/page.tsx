@@ -418,6 +418,37 @@ export default function LeaguesExplorer() {
   const [myGroupId, setMyGroupId] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<PlayoffTab>('standings');
 
+  const ensureGroupPlayoffs = useCallback(async (groupId: number) => {
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError) return false;
+
+      const accessToken = sessionData.session?.access_token;
+      if (!accessToken) return false;
+
+      const response = await fetch('/api/competition/ensure-group-playoffs', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${accessToken}`
+        },
+        body: JSON.stringify({ groupId })
+      });
+
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            ok?: boolean;
+            result?: { createdMatches?: number; status?: 'ok' | 'skipped' };
+          }
+        | null;
+
+      if (!response.ok || !payload?.ok) return false;
+      return Number(payload.result?.createdMatches || 0) > 0;
+    } catch {
+      return false;
+    }
+  }, []);
+
   const sortStandings = useCallback((teams: TeamRow[]) => {
     return [...teams].sort((a, b) => {
       const ptsDiff = Number(b.pts || 0) - Number(a.pts || 0);
@@ -565,6 +596,15 @@ export default function LeaguesExplorer() {
         }
       }
 
+      const regularSeasonComplete = regularMatches.length > 0 && playedRegularMatches.length === regularMatches.length;
+      if (baseTeams.length >= 8 && regularSeasonComplete) {
+        const created = await ensureGroupPlayoffs(grupoId);
+        if (created) {
+          await loadStandings(grupoId);
+          return;
+        }
+      }
+
       setCompetitionState({
         regularPlayedCount: playedRegularMatches.length,
         regularTotalCount: regularMatches.length,
@@ -573,7 +613,7 @@ export default function LeaguesExplorer() {
       });
       setStandings(sortStandings(derived));
     },
-    [sortStandings]
+    [ensureGroupPlayoffs, sortStandings]
   );
 
   const loadInitialData = useCallback(async () => {
