@@ -770,6 +770,8 @@ function MatchEnginePageContent() {
   const playTimerRef = useRef<NodeJS.Timeout | null>(null);
   const liveUnlockTimerRef = useRef<NodeJS.Timeout | null>(null);
   const autoSimulationTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const lastAutomationPulseAtRef = useRef(0);
+  const automationPulseInFlightRef = useRef<Promise<boolean> | null>(null);
   const autoStartedLiveMatchIdRef = useRef<number | null>(null);
   const autoPreparedLiveMatchIdRef = useRef<number | null>(null);
   const prepareSimulationIfNeededRef = useRef<(() => Promise<boolean>) | null>(null);
@@ -864,6 +866,40 @@ function MatchEnginePageContent() {
     );
   }, [currentMatch?.match_date]);
 
+  const triggerAutomationPulse = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastAutomationPulseAtRef.current < 60_000) return true;
+    if (automationPulseInFlightRef.current) return automationPulseInFlightRef.current;
+
+    automationPulseInFlightRef.current = (async () => {
+      try {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (sessionError || !accessToken) return false;
+
+        const response = await fetch('/api/automation/pulse', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({ maxMatches: 220 })
+        });
+
+        if (!response.ok) return false;
+        lastAutomationPulseAtRef.current = Date.now();
+        return true;
+      } catch (error) {
+        console.warn('No se pudo lanzar el pulse de automatización.', error);
+        return false;
+      } finally {
+        automationPulseInFlightRef.current = null;
+      }
+    })();
+
+    return automationPulseInFlightRef.current;
+  }, []);
+
   const applyReplaySnapshot = useCallback((matchData: MatchRow, replaySnapshot: ReturnType<typeof buildReplaySnapshot>) => {
     setCurrentMatch(matchData);
     setMatchEvents(replaySnapshot.replayEvents);
@@ -917,6 +953,8 @@ function MatchEnginePageContent() {
         }
         const myTeamId = String(myClubData.id);
         setMyClubId(myTeamId);
+
+        await triggerAutomationPulse(true);
 
         let matchData: MatchRow | null = null;
         if (requestedMatchId) {
@@ -1005,7 +1043,61 @@ function MatchEnginePageContent() {
     };
 
     void loadContext();
-  }, [applyReplaySnapshot, requestedMatchId, router]);
+  }, [applyReplaySnapshot, requestedMatchId, router, triggerAutomationPulse]);
+
+  useEffect(() => {
+    if (!currentMatch || currentMatch.played) return;
+
+    let isMounted = true;
+
+    const refreshAfterPulse = async (force = false) => {
+      const pulsed = await triggerAutomationPulse(force);
+      if (!pulsed || !isMounted) return;
+
+      const { data, error } = await supabase.from('matches').select('*').eq('id', currentMatch.id).maybeSingle();
+      if (error || !data || !isMounted) return;
+
+      const refreshedMatch = data as MatchRow;
+      const replaySnapshot = buildReplaySnapshot(refreshedMatch, simulatorSettings.quarterDurationSeconds);
+      if (!refreshedMatch.played && replaySnapshot.replayEvents.length === 0) {
+        if (toReplayEvents(refreshedMatch.simulated_play_by_play).length > 0) {
+          setCurrentMatch(refreshedMatch);
+        }
+        return;
+      }
+
+      applyReplaySnapshot(refreshedMatch, replaySnapshot);
+    };
+
+    void refreshAfterPulse();
+
+    const interval = window.setInterval(() => {
+      void refreshAfterPulse();
+    }, 60_000);
+
+    const kickoffAt = currentMatch.match_date ? new Date(currentMatch.match_date).getTime() : NaN;
+    const kickoffTimeout =
+      Number.isFinite(kickoffAt) && kickoffAt > Date.now()
+        ? window.setTimeout(() => {
+            void refreshAfterPulse(true);
+          }, kickoffAt - Date.now() + 250)
+        : null;
+
+    if (Number.isFinite(kickoffAt) && kickoffAt <= Date.now()) {
+      void refreshAfterPulse(true);
+    }
+
+    return () => {
+      isMounted = false;
+      window.clearInterval(interval);
+      if (kickoffTimeout !== null) window.clearTimeout(kickoffTimeout);
+    };
+  }, [
+    applyReplaySnapshot,
+    currentMatch,
+    simulatorSettings.quarterDurationSeconds,
+    triggerAutomationPulse
+  ]);
 
   useEffect(() => {
     if (!currentMatch || currentMatch.played || matchEvents.length > 0 || persisting) return;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { CalendarDays, ChevronLeft, ChevronRight, Activity, Trophy, Play, Shield, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
@@ -232,6 +232,42 @@ export default function CalendarPage() {
   const [myClubId, setMyClubId] = useState<TeamId | null>(null);
   const [myLeagueId, setMyLeagueId] = useState<number | null>(null);
   const [myGroupId, setMyGroupId] = useState<number | null>(null);
+  const lastAutomationPulseAtRef = useRef(0);
+  const automationPulseInFlightRef = useRef<Promise<boolean> | null>(null);
+
+  const triggerAutomationPulse = useCallback(async (force = false) => {
+    const now = Date.now();
+    if (!force && now - lastAutomationPulseAtRef.current < 60_000) return true;
+    if (automationPulseInFlightRef.current) return automationPulseInFlightRef.current;
+
+    automationPulseInFlightRef.current = (async () => {
+      try {
+        const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+        const accessToken = sessionData.session?.access_token;
+        if (sessionError || !accessToken) return false;
+
+        const response = await fetch('/api/automation/pulse', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${accessToken}`
+          },
+          body: JSON.stringify({ maxMatches: 220 })
+        });
+
+        if (!response.ok) return false;
+        lastAutomationPulseAtRef.current = Date.now();
+        return true;
+      } catch (error) {
+        console.warn('No se pudo lanzar el pulse de automatización.', error);
+        return false;
+      } finally {
+        automationPulseInFlightRef.current = null;
+      }
+    })();
+
+    return automationPulseInFlightRef.current;
+  }, []);
 
   const groupOptions = useMemo(
     () => groups.filter(g => g.liga_id === selectedLeagueId),
@@ -537,10 +573,12 @@ export default function CalendarPage() {
     }
   }, [fetchGroupCalendarContext]);
 
-  const loadMatches = useCallback(async (grupoId: number, j: number) => {
-    setLoading(true);
+  const loadMatches = useCallback(async (grupoId: number, j: number, opts?: { silent?: boolean }) => {
+    const silent = Boolean(opts?.silent);
+    if (!silent) setLoading(true);
     setLoadError(null);
     try {
+      await triggerAutomationPulse();
       let context = await fetchGroupCalendarContext(grupoId);
       if (context.standings.length === 0) {
         setMatches([]);
@@ -587,9 +625,9 @@ export default function CalendarPage() {
       setLoadError(`No se pudieron cargar los partidos (${detail.slice(0, 160)}).`);
       setMatches([]);
     } finally {
-      setLoading(false);
+      if (!silent) setLoading(false);
     }
-  }, [ensureGroupPlayoffs, fetchGroupCalendarContext]);
+  }, [ensureGroupPlayoffs, fetchGroupCalendarContext, triggerAutomationPulse]);
 
   const init = useCallback(async () => {
     setLoading(true);
@@ -618,6 +656,8 @@ export default function CalendarPage() {
       setMyLeagueId(myClub.league_id || null);
       setMyGroupId(myClub.grupo_id || null);
 
+      await triggerAutomationPulse(true);
+
       const fallbackLeagueId = myClub.league_id || leaguesData[0]?.id || null;
       const fallbackGroupId =
         myClub.grupo_id ||
@@ -639,7 +679,7 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, [getRoundStateForGroup, loadMatches]);
+  }, [getRoundStateForGroup, loadMatches, triggerAutomationPulse]);
 
   useEffect(() => { void init(); }, [init]);
 
@@ -657,6 +697,7 @@ export default function CalendarPage() {
     }
     let isMounted = true;
     (async () => {
+      await triggerAutomationPulse();
       const roundState = await getRoundStateForGroup(selectedGroupId);
       if (isMounted) {
         setJornada(roundState.currentRound);
@@ -664,11 +705,21 @@ export default function CalendarPage() {
       }
     })();
     return () => { isMounted = false; };
-  }, [selectedGroupId, getRoundStateForGroup]);
+  }, [selectedGroupId, getRoundStateForGroup, triggerAutomationPulse]);
 
   useEffect(() => {
     if (!selectedGroupId) return;
     void loadMatches(selectedGroupId, jornada);
+  }, [selectedGroupId, jornada, loadMatches]);
+
+  useEffect(() => {
+    if (!selectedGroupId) return;
+
+    const interval = window.setInterval(() => {
+      void loadMatches(selectedGroupId, jornada, { silent: true });
+    }, 60_000);
+
+    return () => window.clearInterval(interval);
   }, [selectedGroupId, jornada, loadMatches]);
 
   const nextRound = () => setJornada(p => Math.min(maxRound, p + 1));
@@ -678,6 +729,7 @@ export default function CalendarPage() {
     if (!myLeagueId || !myGroupId) return;
     setSelectedLeagueId(myLeagueId);
     setSelectedGroupId(myGroupId);
+    await triggerAutomationPulse();
     const roundState = await getRoundStateForGroup(myGroupId);
     setJornada(roundState.currentRound);
     setMaxRound(roundState.maxRound);
@@ -905,13 +957,15 @@ export default function CalendarPage() {
                             {m.activationBlockedReason}
                           </span>
                         )}
-                        {isMyMatch && !m.isProjected && m.id && (
+                        {!m.isProjected && m.id && (
                           <div className="mt-3 flex flex-wrap justify-center gap-2">
-                            <Link href={`/tactics?matchId=${m.id}`} className="flex items-center gap-1 text-[10px] font-black text-yellow-500 uppercase hover:text-yellow-400 transition-colors bg-yellow-500/10 px-3 py-1.5 rounded-lg border border-yellow-500/20">
-                              <Shield size={10} /> Preparar
-                            </Link>
+                            {isMyMatch && (
+                              <Link href={`/tactics?matchId=${m.id}`} className="flex items-center gap-1 text-[10px] font-black text-yellow-500 uppercase hover:text-yellow-400 transition-colors bg-yellow-500/10 px-3 py-1.5 rounded-lg border border-yellow-500/20">
+                                <Shield size={10} /> Preparar
+                              </Link>
+                            )}
                             <Link href={`/match?matchId=${m.id}`} className="flex items-center gap-1 text-[10px] font-black text-emerald-400 uppercase hover:text-emerald-300 transition-colors bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20">
-                              <Play size={10} fill="currentColor" /> Seguir
+                              <Play size={10} fill="currentColor" /> {isMyMatch ? 'Seguir' : 'Ver Partido'}
                             </Link>
                           </div>
                         )}

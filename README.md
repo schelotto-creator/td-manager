@@ -64,6 +64,8 @@ Vercel enviará `Authorization: Bearer <CRON_SECRET>` si defines `CRON_SECRET` e
 
 Si despliegas en Vercel Pro/Enterprise y necesitas preparar/cerrar partidos cerca de su hora oficial, puedes cambiar el cron a `* * * * *`.
 
+En despliegues donde el cron no tenga suficiente frecuencia, la app dispara además un fallback autenticado en `POST /api/automation/pulse` al entrar en `/calendar` y `/match` para preparar/cerrar partidos oficiales cercanos a su hora.
+
 ### SQL necesario
 
 Aplica las migraciones de `db/migrations`, en especial:
