@@ -76,7 +76,28 @@ export async function POST(request: NextRequest) {
     }
 
     const result = await advanceGroupPlayoffsForGroup(supabaseAdmin, groupId);
-    return NextResponse.json({ ok: true, result });
+
+    let viewerMatchId: number | null = null;
+    if (sameGroup && club?.id) {
+      const viewerTeamId = String(club.id);
+      const { data: viewerMatches, error: viewerMatchesError } = await supabaseAdmin
+        .from('matches')
+        .select('id, jornada')
+        .in('fase', ['PROMO_SF', 'PROMO_FINAL', 'RELEG_SF', 'RELEG_FINAL'])
+        .or(`home_team_id.eq.${viewerTeamId},away_team_id.eq.${viewerTeamId}`)
+        .order('jornada', { ascending: false })
+        .order('id', { ascending: false })
+        .limit(1);
+
+      if (viewerMatchesError) {
+        throw new Error(`No se pudo localizar el cruce oficial del usuario: ${toErrorText(viewerMatchesError)}`);
+      }
+
+      const candidateId = Number(viewerMatches?.[0]?.id || 0);
+      viewerMatchId = candidateId > 0 ? candidateId : null;
+    }
+
+    return NextResponse.json({ ok: true, result, viewerMatchId });
   } catch (error) {
     return NextResponse.json({ ok: false, error: toErrorText(error) }, { status: 500 });
   }
