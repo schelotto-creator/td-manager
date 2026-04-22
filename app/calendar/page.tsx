@@ -10,8 +10,15 @@ type LigaRow = { id: number; nombre: string; nivel?: number; };
 type GrupoRow = { id: number; nombre: string; liga_id: number; };
 type TeamId = string;
 type MatchTeam = { id: TeamId; nombre: string; color_primario?: string; escudo_forma?: EscudoForma | null; escudo_url?: string | null; };
-type MatchRow = {
-  id: number;
+type TeamStanding = MatchTeam & {
+  pj: number;
+  v: number;
+  d: number;
+  pts: number;
+};
+type CalendarMatchRow = {
+  entryId: string;
+  id?: number;
   jornada: number;
   fase?: string | null;
   home_score: number;
@@ -20,6 +27,8 @@ type MatchRow = {
   match_date?: string | null;
   home_team: MatchTeam;
   away_team: MatchTeam;
+  isProjected?: boolean;
+  projectedLabel?: string | null;
 };
 type DbMatchRow = {
   id: number;
@@ -31,6 +40,24 @@ type DbMatchRow = {
   away_score: number;
   played: boolean;
   match_date?: string | null;
+};
+type BracketPairing = {
+  label: string;
+  homeSeed: string;
+  awaySeed: string;
+  home?: TeamStanding;
+  away?: TeamStanding;
+};
+type GroupCalendarContext = {
+  allMatches: DbMatchRow[];
+  teamById: Map<TeamId, MatchTeam>;
+  standings: TeamStanding[];
+  actualMaxRound: number;
+  regularMaxRound: number;
+  plannedMaxRound: number;
+  playoffSemiRound: number;
+  playoffFinalRound: number;
+  hasPlayoffSlots: boolean;
 };
 const buildFallbackTeam = (id: TeamId): MatchTeam => ({ id, nombre: `Equipo ${id}` });
 const normalizePhase = (phase?: string | null) => String(phase || 'REGULAR').trim().toUpperCase();
@@ -47,6 +74,115 @@ const toErrorText = (error: unknown) => {
     return e.message || e.details || e.hint || JSON.stringify(error);
   }
   return String(error);
+};
+const sortStandings = (teams: TeamStanding[]) =>
+  [...teams].sort((a, b) => {
+    const ptsDiff = Number(b.pts || 0) - Number(a.pts || 0);
+    if (ptsDiff !== 0) return ptsDiff;
+    const winsDiff = Number(b.v || 0) - Number(a.v || 0);
+    if (winsDiff !== 0) return winsDiff;
+    const lossesDiff = Number(a.d || 0) - Number(b.d || 0);
+    if (lossesDiff !== 0) return lossesDiff;
+    return String(a.nombre || '').localeCompare(String(b.nombre || ''));
+  });
+const dedupeMatches = (matches: DbMatchRow[]) =>
+  Array.from(new Map(matches.map((match) => [match.id, match])).values()).sort((a, b) => {
+    const roundDiff = Number(a.jornada || 0) - Number(b.jornada || 0);
+    if (roundDiff !== 0) return roundDiff;
+    return Number(a.id || 0) - Number(b.id || 0);
+  });
+const buildBracketPairings = (teams: TeamStanding[], startSeed: number): BracketPairing[] => {
+  if (teams.length < 4) return [];
+
+  return [
+    {
+      label: 'Semifinal 1',
+      homeSeed: `${startSeed}º`,
+      awaySeed: `${startSeed + 3}º`,
+      home: teams[0],
+      away: teams[3]
+    },
+    {
+      label: 'Semifinal 2',
+      homeSeed: `${startSeed + 1}º`,
+      awaySeed: `${startSeed + 2}º`,
+      home: teams[1],
+      away: teams[2]
+    }
+  ];
+};
+const buildProjectedPlayoffMatches = (
+  context: GroupCalendarContext,
+  round: number
+): CalendarMatchRow[] => {
+  if (!context.hasPlayoffSlots || context.standings.length < 8) return [];
+
+  if (round === context.playoffSemiRound) {
+    const promotionPairings = buildBracketPairings(context.standings.slice(0, 4), 1);
+    const relegationPairings = buildBracketPairings(context.standings.slice(4, 8), 5);
+
+    return [
+      ...promotionPairings.map((pairing, index) => ({
+        entryId: `projected-promo-sf-${round}-${index}`,
+        jornada: round,
+        fase: 'PROMO_SF',
+        home_score: 0,
+        away_score: 0,
+        played: false,
+        match_date: null,
+        home_team: pairing.home || buildFallbackTeam(`projected-promo-home-${index}`),
+        away_team: pairing.away || buildFallbackTeam(`projected-promo-away-${index}`),
+        isProjected: true,
+        projectedLabel: `Ascenso · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`
+      })),
+      ...relegationPairings.map((pairing, index) => ({
+        entryId: `projected-releg-sf-${round}-${index}`,
+        jornada: round,
+        fase: 'RELEG_SF',
+        home_score: 0,
+        away_score: 0,
+        played: false,
+        match_date: null,
+        home_team: pairing.home || buildFallbackTeam(`projected-releg-home-${index}`),
+        away_team: pairing.away || buildFallbackTeam(`projected-releg-away-${index}`),
+        isProjected: true,
+        projectedLabel: `Permanencia · ${pairing.label} · ${pairing.homeSeed} vs ${pairing.awaySeed}`
+      }))
+    ];
+  }
+
+  if (round === context.playoffFinalRound) {
+    return [
+      {
+        entryId: `projected-promo-final-${round}`,
+        jornada: round,
+        fase: 'PROMO_FINAL',
+        home_score: 0,
+        away_score: 0,
+        played: false,
+        match_date: null,
+        home_team: { id: 'promo-finalist-1', nombre: 'Ganador SF 1' },
+        away_team: { id: 'promo-finalist-2', nombre: 'Ganador SF 2' },
+        isProjected: true,
+        projectedLabel: 'Final ascenso · 1º-4º'
+      },
+      {
+        entryId: `projected-releg-final-${round}`,
+        jornada: round,
+        fase: 'RELEG_FINAL',
+        home_score: 0,
+        away_score: 0,
+        played: false,
+        match_date: null,
+        home_team: { id: 'releg-finalist-1', nombre: 'Ganador SF 1' },
+        away_team: { id: 'releg-finalist-2', nombre: 'Ganador SF 2' },
+        isProjected: true,
+        projectedLabel: 'Final permanencia · 5º-8º'
+      }
+    ];
+  }
+
+  return [];
 };
 
 function EscudoSVG({ forma, color, className }: { forma?: string | null; color?: string | null; className?: string; }) {
@@ -66,7 +202,7 @@ export default function CalendarPage() {
   const [loading, setLoading] = useState(true);
   const [jornada, setJornada] = useState(1);
   const [maxRound, setMaxRound] = useState(14);
-  const [matches, setMatches] = useState<MatchRow[]>([]);
+  const [matches, setMatches] = useState<CalendarMatchRow[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const [leagues, setLeagues] = useState<LigaRow[]>([]);
@@ -100,103 +236,229 @@ export default function CalendarPage() {
     [groups, myGroupId]
   );
 
-  const getTeamIdsForGroup = useCallback(async (grupoId: number) => {
-    const { data } = await supabase.from('clubes').select('id').eq('grupo_id', grupoId);
-    return (data || []).map(t => String(t.id));
+  const fetchGroupCalendarContext = useCallback(async (grupoId: number): Promise<GroupCalendarContext> => {
+    const { data: teamsData, error: teamsError } = await supabase
+      .from('clubes')
+      .select('id, nombre, color_primario, escudo_forma, escudo_url')
+      .eq('grupo_id', grupoId);
+
+    if (teamsError) {
+      throw teamsError;
+    }
+
+    const baseTeams = ((teamsData || []) as Array<{
+      id: TeamId;
+      nombre: string;
+      color_primario?: string | null;
+      escudo_forma?: EscudoForma | null;
+      escudo_url?: string | null;
+    }>).map((team) => ({
+      id: String(team.id),
+      nombre: String(team.nombre || `Equipo ${team.id}`),
+      color_primario: team.color_primario || undefined,
+      escudo_forma: team.escudo_forma || undefined,
+      escudo_url: team.escudo_url || undefined,
+      pj: 0,
+      v: 0,
+      d: 0,
+      pts: 0
+    }));
+
+    const teamById = new Map<TeamId, MatchTeam>(
+      baseTeams.map((team) => [
+        team.id,
+        {
+          id: team.id,
+          nombre: team.nombre,
+          color_primario: team.color_primario,
+          escudo_forma: team.escudo_forma,
+          escudo_url: team.escudo_url
+        }
+      ])
+    );
+
+    const teamIds = baseTeams.map((team) => team.id);
+    if (teamIds.length === 0) {
+      return {
+        allMatches: [],
+        teamById,
+        standings: [],
+        actualMaxRound: 0,
+        regularMaxRound: 0,
+        plannedMaxRound: 14,
+        playoffSemiRound: 15,
+        playoffFinalRound: 16,
+        hasPlayoffSlots: false
+      };
+    }
+
+    const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
+      await Promise.all([
+        supabase
+          .from('matches')
+          .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .in('home_team_id', teamIds),
+        supabase
+          .from('matches')
+          .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .in('away_team_id', teamIds)
+      ]);
+
+    const matchesError = homeMatchesError || awayMatchesError;
+    if (matchesError) {
+      throw matchesError;
+    }
+
+    const teamIdSet = new Set(teamIds);
+    const allMatches = dedupeMatches([
+      ...(((homeMatches || []) as DbMatchRow[]) || []),
+      ...(((awayMatches || []) as DbMatchRow[]) || [])
+    ]).filter(
+      (match) =>
+        teamIdSet.has(String(match.home_team_id)) &&
+        teamIdSet.has(String(match.away_team_id))
+    );
+
+    const regularMatches = allMatches.filter((match) => normalizePhase(match.fase) === 'REGULAR');
+    const statsByTeam = new Map<TeamId, { pj: number; v: number; d: number; pts: number }>(
+      teamIds.map((id) => [id, { pj: 0, v: 0, d: 0, pts: 0 }])
+    );
+
+    regularMatches
+      .filter((match) => match.played)
+      .forEach((match) => {
+        const homeId = String(match.home_team_id);
+        const awayId = String(match.away_team_id);
+        const home = statsByTeam.get(homeId);
+        const away = statsByTeam.get(awayId);
+        if (!home || !away) return;
+
+        home.pj += 1;
+        away.pj += 1;
+
+        const homeScore = Number(match.home_score || 0);
+        const awayScore = Number(match.away_score || 0);
+
+        if (homeScore > awayScore) {
+          home.v += 1;
+          home.pts += 2;
+          away.d += 1;
+          away.pts += 1;
+          return;
+        }
+
+        if (awayScore > homeScore) {
+          away.v += 1;
+          away.pts += 2;
+          home.d += 1;
+          home.pts += 1;
+          return;
+        }
+
+        home.d += 1;
+        away.d += 1;
+        home.pts += 1;
+        away.pts += 1;
+      });
+
+    const standings = sortStandings(
+      baseTeams.map((team) => {
+        const computed = statsByTeam.get(team.id);
+        return {
+          ...team,
+          pj: computed?.pj || 0,
+          v: computed?.v || 0,
+          d: computed?.d || 0,
+          pts: computed?.pts || 0
+        };
+      })
+    );
+
+    const regularMaxRound = regularMatches.length > 0
+      ? Math.max(...regularMatches.map((match) => Number(match.jornada || 0)))
+      : 0;
+    const actualMaxRound = allMatches.length > 0
+      ? Math.max(...allMatches.map((match) => Number(match.jornada || 0)))
+      : 0;
+    const hasPlayoffSlots = teamIds.length >= 8 && regularMaxRound > 0;
+    const playoffSemiRound = regularMaxRound > 0 ? regularMaxRound + 1 : 15;
+    const playoffFinalRound = regularMaxRound > 0 ? regularMaxRound + 2 : 16;
+    const plannedMaxRound = hasPlayoffSlots
+      ? Math.max(actualMaxRound, playoffFinalRound)
+      : Math.max(actualMaxRound, regularMaxRound || 14);
+
+    return {
+      allMatches,
+      teamById,
+      standings,
+      actualMaxRound,
+      regularMaxRound,
+      plannedMaxRound,
+      playoffSemiRound,
+      playoffFinalRound,
+      hasPlayoffSlots
+    };
   }, []);
 
   const getRoundStateForGroup = useCallback(async (grupoId: number) => {
-    const teamIds = await getTeamIdsForGroup(grupoId);
-    if (teamIds.length === 0) return { currentRound: 1, maxRound: 14 };
+    try {
+      const context = await fetchGroupCalendarContext(grupoId);
 
-    const { data: allMatches, error } = await supabase
-      .from('matches')
-      .select('jornada, played')
-      .in('home_team_id', teamIds);
+      if (context.allMatches.length === 0) {
+        return { currentRound: 1, maxRound: context.plannedMaxRound };
+      }
 
-    if (error) {
+      for (let round = 1; round <= context.plannedMaxRound; round++) {
+        const roundMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === round);
+        if (roundMatches.length === 0) {
+          if (
+            round <= context.actualMaxRound ||
+            (context.hasPlayoffSlots && round > context.regularMaxRound)
+          ) {
+            return {
+              currentRound: round,
+              maxRound: context.plannedMaxRound
+            };
+          }
+          continue;
+        }
+
+        if (roundMatches.some((match) => !match.played)) {
+          return {
+            currentRound: round,
+            maxRound: context.plannedMaxRound
+          };
+        }
+      }
+
+      return {
+        currentRound: context.plannedMaxRound,
+        maxRound: context.plannedMaxRound
+      };
+    } catch (error) {
       console.warn('No se pudo calcular la jornada actual del grupo.', error);
       return { currentRound: 1, maxRound: 14 };
     }
-
-    const byRound = new Map<number, { total: number; played: number }>();
-    (allMatches || []).forEach((m) => {
-      const round = Number(m.jornada || 1);
-      const curr = byRound.get(round) || { total: 0, played: 0 };
-      curr.total += 1;
-      if (m.played) curr.played += 1;
-      byRound.set(round, curr);
-    });
-
-    const rounds = [...byRound.keys()].filter((round) => Number.isFinite(round) && round > 0);
-    const detectedMaxRound = rounds.length > 0 ? Math.max(...rounds) : 14;
-
-    for (let r = 1; r <= detectedMaxRound; r++) {
-      const info = byRound.get(r);
-      if (!info || info.played < info.total) {
-        return {
-          currentRound: r,
-          maxRound: detectedMaxRound
-        };
-      }
-    }
-
-    return {
-      currentRound: detectedMaxRound,
-      maxRound: detectedMaxRound
-    };
-  }, [getTeamIdsForGroup]);
+  }, [fetchGroupCalendarContext]);
 
   const loadMatches = useCallback(async (grupoId: number, j: number) => {
     setLoading(true);
     setLoadError(null);
     try {
-      const teamIds = await getTeamIdsForGroup(grupoId);
-      if (teamIds.length === 0) {
+      const context = await fetchGroupCalendarContext(grupoId);
+      if (context.standings.length === 0) {
         setMatches([]);
         return;
       }
 
-      const { data: partidos, error } = await supabase
-        .from('matches')
-        .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
-        .eq('jornada', j)
-        .in('home_team_id', teamIds)
-        .order('id', { ascending: true });
-
-      if (error) throw error;
-
-      const rawMatches = (partidos || []) as DbMatchRow[];
+      const rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
       if (rawMatches.length === 0) {
-        setMatches([]);
+        setMatches(buildProjectedPlayoffMatches(context, j));
         return;
       }
 
-      const uniqueTeamIds = [...new Set(rawMatches.flatMap((m) => [String(m.home_team_id), String(m.away_team_id)]).filter(Boolean))];
-      if (uniqueTeamIds.length === 0) {
-        setMatches([]);
-        return;
-      }
-      const { data: teamsData, error: teamsError } = await supabase
-        .from('clubes')
-        .select('*')
-        .in('id', uniqueTeamIds);
-
-      if (teamsError) throw teamsError;
-
-      const teamById = new Map<TeamId, MatchTeam>();
-      (teamsData || []).forEach((team) => {
-        const id = String(team.id);
-        teamById.set(id, {
-          id,
-          nombre: String(team.nombre || `Equipo ${team.id}`),
-          color_primario: team.color_primario || undefined,
-          escudo_forma: (team.escudo_forma as EscudoForma | null) || undefined,
-          escudo_url: team.escudo_url || undefined,
-        });
-      });
-
-      const normalizedMatches: MatchRow[] = rawMatches.map((match) => ({
+      const normalizedMatches: CalendarMatchRow[] = rawMatches.map((match) => ({
+        entryId: `official-${match.id}`,
         id: match.id,
         jornada: match.jornada,
         fase: match.fase || null,
@@ -204,8 +466,8 @@ export default function CalendarPage() {
         away_score: match.away_score,
         played: match.played,
         match_date: match.match_date || null,
-        home_team: teamById.get(String(match.home_team_id)) || buildFallbackTeam(String(match.home_team_id)),
-        away_team: teamById.get(String(match.away_team_id)) || buildFallbackTeam(String(match.away_team_id)),
+        home_team: context.teamById.get(String(match.home_team_id)) || buildFallbackTeam(String(match.home_team_id)),
+        away_team: context.teamById.get(String(match.away_team_id)) || buildFallbackTeam(String(match.away_team_id)),
       }));
 
       setMatches(normalizedMatches);
@@ -218,7 +480,7 @@ export default function CalendarPage() {
     } finally {
       setLoading(false);
     }
-  }, [getTeamIdsForGroup]);
+  }, [fetchGroupCalendarContext]);
 
   const init = useCallback(async () => {
     setLoading(true);
@@ -315,8 +577,19 @@ export default function CalendarPage() {
   const isShowingDefault = selectedGroupId === myGroupId;
   const currentPhaseLabel = useMemo(() => {
     const distinctPhases = [...new Set(matches.map((match) => normalizePhase(match.fase)))];
-    if (distinctPhases.length !== 1) return null;
-    if (distinctPhases[0] === 'REGULAR') return null;
+    if (distinctPhases.length === 0) return null;
+
+    const allProjected = matches.length > 0 && matches.every((match) => match.isProjected);
+    const allSemis = distinctPhases.every((phase) => phase.endsWith('_SF'));
+    const allFinals = distinctPhases.every((phase) => phase.endsWith('FINAL'));
+
+    if (allSemis) {
+      return allProjected ? 'Semifinales planificadas' : 'Semifinales playoff';
+    }
+    if (allFinals) {
+      return allProjected ? 'Finales planificadas' : 'Finales playoff';
+    }
+    if (distinctPhases.length !== 1 || distinctPhases[0] === 'REGULAR') return null;
     return formatPhaseLabel(distinctPhases[0]);
   }, [matches]);
 
@@ -338,7 +611,7 @@ export default function CalendarPage() {
     }).format(baseDate) + ' CET';
   };
 
-  const formatKickoff = (match: MatchRow) => {
+  const formatKickoff = (match: CalendarMatchRow) => {
     if (match.match_date) {
       const parsed = new Date(match.match_date);
       if (!Number.isNaN(parsed.getTime())) {
@@ -437,6 +710,12 @@ export default function CalendarPage() {
           </div>
         )}
 
+        {matches.some((match) => match.isProjected) && (
+          <div className="mb-4 px-4 py-3 rounded-xl border border-cyan-500/20 bg-cyan-500/10 text-[10px] font-black uppercase tracking-widest text-cyan-200">
+            Playoffs planificados: estos cruces son provisionales y reservan su slot oficial de miércoles o sábado.
+          </div>
+        )}
+
         {loadError && (
           <div className="mb-4 px-4 py-2 rounded-xl border border-red-500/20 bg-red-500/10 text-[10px] font-black uppercase tracking-widest text-red-300">
             {loadError}
@@ -459,7 +738,7 @@ export default function CalendarPage() {
               const isMyMatch = myClubId === m.home_team?.id || myClubId === m.away_team?.id;
 
               return (
-                <div key={m.id} className={`relative flex items-center justify-between p-6 rounded-[2rem] border transition-all ${isMyMatch ? 'bg-orange-500/10 border-orange-500/30 shadow-[0_0_20px_rgba(249,115,22,0.1)]' : 'bg-slate-900 border-white/5 hover:border-white/10'}`}>
+                <div key={m.entryId} className={`relative flex items-center justify-between p-6 rounded-[2rem] border transition-all ${m.isProjected ? 'bg-cyan-500/5 border-cyan-500/20 border-dashed' : isMyMatch ? 'bg-orange-500/10 border-orange-500/30 shadow-[0_0_20px_rgba(249,115,22,0.1)]' : 'bg-slate-900 border-white/5 hover:border-white/10'}`}>
                   <div className="flex flex-col items-center w-1/3 gap-3">
                     <div className="w-14 h-14">
                       {m.home_team?.escudo_url ? (
@@ -482,18 +761,27 @@ export default function CalendarPage() {
                           <span className={`text-3xl font-mono font-black ${m.away_score > m.home_score ? 'text-white' : 'text-slate-500'}`}>{m.away_score}</span>
                         </div>
                         <span className="text-[9px] bg-slate-950 px-3 py-1 rounded-full text-slate-500 uppercase tracking-widest font-bold mt-2 border border-white/5">Finalizado</span>
-                        <Link href={`/match?matchId=${m.id}`} className="mt-3 flex items-center gap-1 text-[10px] font-black text-cyan-500 uppercase hover:text-cyan-400 transition-colors bg-cyan-500/10 px-3 py-1.5 rounded-lg border border-cyan-500/20">
-                          <Play size={10} fill="currentColor" /> Ver Repetición
-                        </Link>
+                        {m.id && (
+                          <Link href={`/match?matchId=${m.id}`} className="mt-3 flex items-center gap-1 text-[10px] font-black text-cyan-500 uppercase hover:text-cyan-400 transition-colors bg-cyan-500/10 px-3 py-1.5 rounded-lg border border-cyan-500/20">
+                            <Play size={10} fill="currentColor" /> Ver Repetición
+                          </Link>
+                        )}
                       </div>
                     ) : (
                       <div className="flex flex-col items-center">
-                        <span className="text-xl font-black text-slate-600">VS</span>
-                        <span className="text-[9px] bg-orange-500/10 text-orange-500 px-3 py-1 rounded-full uppercase tracking-widest font-bold mt-2 border border-orange-500/20">Pendiente</span>
-                        <span className="mt-2 text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">
-                          Auto: {formatKickoff(m)}
+                        <span className={`text-xl font-black ${m.isProjected ? 'text-cyan-300' : 'text-slate-600'}`}>VS</span>
+                        <span className={`text-[9px] px-3 py-1 rounded-full uppercase tracking-widest font-bold mt-2 border ${m.isProjected ? 'bg-cyan-500/10 text-cyan-300 border-cyan-500/20' : 'bg-orange-500/10 text-orange-500 border-orange-500/20'}`}>
+                          {m.isProjected ? 'Planificado' : 'Pendiente'}
                         </span>
-                        {isMyMatch && (
+                        {m.projectedLabel && (
+                          <span className="mt-2 text-[9px] text-cyan-200 font-bold uppercase tracking-widest text-center">
+                            {m.projectedLabel}
+                          </span>
+                        )}
+                        <span className="mt-2 text-[9px] text-slate-400 font-bold uppercase tracking-widest text-center">
+                          {m.isProjected ? 'Slot: ' : 'Auto: '}{formatKickoff(m)}
+                        </span>
+                        {isMyMatch && !m.isProjected && m.id && (
                           <div className="mt-3 flex flex-wrap justify-center gap-2">
                             <Link href={`/tactics?matchId=${m.id}`} className="flex items-center gap-1 text-[10px] font-black text-yellow-500 uppercase hover:text-yellow-400 transition-colors bg-yellow-500/10 px-3 py-1.5 rounded-lg border border-yellow-500/20">
                               <Shield size={10} /> Preparar
