@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Globe, Medal, ArrowUpCircle, ArrowDownCircle, Filter, RotateCcw } from 'lucide-react';
+import { Globe, Medal, Trophy, ArrowUpCircle, ArrowDownCircle, Filter, RotateCcw } from 'lucide-react';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number };
@@ -43,6 +43,27 @@ type BracketPairing = {
   home?: TeamRow;
   away?: TeamRow;
 };
+type BracketTone = 'green' | 'red';
+type PlayoffTab = 'standings' | 'playoffs';
+type BracketMatchCardData = {
+  id: string;
+  label: string;
+  homeTeam?: TeamRow;
+  awayTeam?: TeamRow;
+  homeSeed?: string;
+  awaySeed?: string;
+  played?: boolean;
+  homeScore?: number;
+  awayScore?: number;
+  footer?: string;
+};
+
+const PLAYOFF_PHASE = {
+  PROMO_SF: 'PROMO_SF',
+  PROMO_FINAL: 'PROMO_FINAL',
+  RELEG_SF: 'RELEG_SF',
+  RELEG_FINAL: 'RELEG_FINAL'
+} as const;
 
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
@@ -68,12 +89,6 @@ const sortMatches = (matches: CompetitionMatchRow[]) =>
 const dedupeMatches = (matches: CompetitionMatchRow[]) =>
   sortMatches(Array.from(new Map(matches.map((match) => [match.id, match])).values()));
 
-const formatPhaseLabel = (phase?: string | null) =>
-  normalizePhase(phase)
-    .replace(/_/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-
 const buildBracketPairings = (teams: TeamRow[], startSeed: number): BracketPairing[] => {
   if (teams.length < 4) return [];
 
@@ -94,6 +109,233 @@ const buildBracketPairings = (teams: TeamRow[], startSeed: number): BracketPairi
     }
   ];
 };
+
+const buildPlaceholderTeam = (id: string, nombre: string): TeamRow => ({
+  id,
+  nombre
+});
+
+const getBracketToneClasses = (tone: BracketTone) =>
+  tone === 'green'
+    ? {
+        panel: 'border-green-500/20 bg-green-500/10',
+        card: 'border-green-500/15 bg-slate-950/70',
+        badge: 'border-green-500/20 bg-green-500/10 text-green-200',
+        accent: 'text-green-300',
+        connector: 'bg-green-400/45',
+        mutedConnector: 'bg-green-400/20'
+      }
+    : {
+        panel: 'border-red-500/20 bg-red-500/10',
+        card: 'border-red-500/15 bg-slate-950/70',
+        badge: 'border-red-500/20 bg-red-500/10 text-red-200',
+        accent: 'text-red-300',
+        connector: 'bg-red-400/45',
+        mutedConnector: 'bg-red-400/20'
+      };
+
+const getTeamFromDirectory = (
+  teamDirectory: Record<TeamId, TeamRow>,
+  teamId: TeamId
+) => teamDirectory[String(teamId)] || buildPlaceholderTeam(String(teamId), `Equipo ${String(teamId)}`);
+
+const getWinnerTeamFromMatch = (
+  match: CompetitionMatchRow | undefined,
+  teamDirectory: Record<TeamId, TeamRow>
+) => {
+  if (!match || !match.played) return null;
+  const homeScore = Number(match.home_score || 0);
+  const awayScore = Number(match.away_score || 0);
+  if (homeScore === awayScore) return null;
+  return homeScore > awayScore
+    ? getTeamFromDirectory(teamDirectory, match.home_team_id)
+    : getTeamFromDirectory(teamDirectory, match.away_team_id);
+};
+
+const buildOfficialMatchCard = (
+  match: CompetitionMatchRow,
+  teamDirectory: Record<TeamId, TeamRow>,
+  label: string
+): BracketMatchCardData => ({
+  id: `official-${match.id}`,
+  label,
+  homeTeam: getTeamFromDirectory(teamDirectory, match.home_team_id),
+  awayTeam: getTeamFromDirectory(teamDirectory, match.away_team_id),
+  played: match.played,
+  homeScore: Number(match.home_score || 0),
+  awayScore: Number(match.away_score || 0),
+  footer: `Jornada ${match.jornada || '-'}`
+});
+
+const buildProjectedMatchCard = (
+  pairing: BracketPairing,
+  label: string
+): BracketMatchCardData => ({
+  id: `projected-${label}-${pairing.homeSeed}-${pairing.awaySeed}`,
+  label,
+  homeTeam: pairing.home,
+  awayTeam: pairing.away,
+  homeSeed: pairing.homeSeed,
+  awaySeed: pairing.awaySeed,
+  played: false
+});
+
+function TeamBadge({
+  team,
+  seed,
+  tone
+}: {
+  team?: TeamRow;
+  seed?: string;
+  tone: BracketTone;
+}) {
+  const toneClasses = getBracketToneClasses(tone);
+
+  return (
+    <div className="flex items-center gap-3 rounded-2xl border border-white/5 bg-white/5 px-3 py-2.5">
+      <div className={`min-w-[42px] rounded-xl border px-2 py-1 text-center text-[10px] font-black uppercase tracking-widest ${toneClasses.badge}`}>
+        {seed || 'EQ'}
+      </div>
+      <div className="w-9 h-9 shrink-0 flex items-center justify-center">
+        {team?.escudo_url ? (
+          <img
+            src={team.escudo_url}
+            alt={`Escudo ${team.nombre}`}
+            className="w-full h-full object-contain drop-shadow-[0_4px_10px_rgba(0,0,0,0.4)]"
+            onError={(e) => {
+              e.currentTarget.style.display = 'none';
+              e.currentTarget.nextElementSibling?.classList.remove('hidden');
+            }}
+          />
+        ) : null}
+        <EscudoSVG
+          forma={team?.escudo_forma}
+          color={team?.color_primario}
+          className={`w-full h-full drop-shadow-[0_4px_10px_rgba(0,0,0,0.4)] ${team?.escudo_url ? 'hidden' : ''}`}
+        />
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-[11px] font-black uppercase tracking-wide text-white">
+          {team?.nombre || 'Por definir'}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function BracketMatchCard({
+  match,
+  tone
+}: {
+  match: BracketMatchCardData;
+  tone: BracketTone;
+}) {
+  const toneClasses = getBracketToneClasses(tone);
+
+  return (
+    <div className={`rounded-[1.6rem] border p-4 shadow-[0_20px_60px_rgba(2,6,23,0.35)] ${toneClasses.card}`}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className={`text-[10px] font-black uppercase tracking-[0.25em] ${toneClasses.accent}`}>
+            {match.label}
+          </p>
+          {match.footer && (
+            <p className="mt-1 text-[10px] font-bold uppercase tracking-widest text-slate-500">
+              {match.footer}
+            </p>
+          )}
+        </div>
+        <div className="text-right">
+          {match.played ? (
+            <div className="rounded-xl border border-emerald-500/20 bg-emerald-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-emerald-300">
+              {match.homeScore} - {match.awayScore}
+            </div>
+          ) : (
+            <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-1 text-[10px] font-black uppercase tracking-widest text-amber-300">
+              Pendiente
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="mt-4 space-y-2.5">
+        <TeamBadge team={match.homeTeam} seed={match.homeSeed} tone={tone} />
+        <TeamBadge team={match.awayTeam} seed={match.awaySeed} tone={tone} />
+      </div>
+    </div>
+  );
+}
+
+function BracketConnector({ tone }: { tone: BracketTone }) {
+  const toneClasses = getBracketToneClasses(tone);
+
+  return (
+    <div className="hidden xl:block relative h-[280px]">
+      <div className={`absolute left-0 top-[25%] h-px w-1/2 ${toneClasses.connector}`}></div>
+      <div className={`absolute left-0 bottom-[25%] h-px w-1/2 ${toneClasses.connector}`}></div>
+      <div className={`absolute left-1/2 top-[25%] bottom-[25%] w-px ${toneClasses.connector}`}></div>
+      <div className={`absolute left-1/2 top-1/2 h-px w-1/2 ${toneClasses.connector}`}></div>
+      <div className={`absolute inset-y-[calc(50%-24px)] right-0 w-px ${toneClasses.mutedConnector}`}></div>
+    </div>
+  );
+}
+
+function BracketSection({
+  title,
+  subtitle,
+  tone,
+  status,
+  semifinals,
+  finalMatch
+}: {
+  title: string;
+  subtitle: string;
+  tone: BracketTone;
+  status: string;
+  semifinals: BracketMatchCardData[];
+  finalMatch: BracketMatchCardData;
+}) {
+  const toneClasses = getBracketToneClasses(tone);
+
+  return (
+    <section className={`rounded-[2rem] border p-5 lg:p-6 ${toneClasses.panel}`}>
+      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+        <div>
+          <p className={`text-[10px] font-black uppercase tracking-[0.25em] ${toneClasses.accent}`}>
+            {title}
+          </p>
+          <h5 className="mt-2 text-2xl font-black uppercase tracking-tight text-white">
+            {subtitle}
+          </h5>
+        </div>
+        <div className="rounded-2xl border border-white/10 bg-slate-950/50 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-300">
+          {status}
+        </div>
+      </div>
+
+      <div className="mt-6 grid gap-5 xl:grid-cols-[minmax(0,1fr)_88px_minmax(0,1fr)] xl:items-center">
+        <div className="space-y-4">
+          {semifinals.map((match) => (
+            <BracketMatchCard key={match.id} match={match} tone={tone} />
+          ))}
+        </div>
+
+        <BracketConnector tone={tone} />
+
+        <div className="xl:min-h-[280px] xl:flex xl:items-center">
+          <div className="w-full">
+            <div className="xl:hidden mb-3 flex items-center gap-3 text-[10px] font-black uppercase tracking-[0.25em] text-slate-500">
+              <div className={`h-px flex-1 ${toneClasses.connector}`}></div>
+              Final
+              <div className={`h-px flex-1 ${toneClasses.connector}`}></div>
+            </div>
+            <BracketMatchCard match={finalMatch} tone={tone} />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function EscudoSVG({
   forma,
@@ -140,6 +382,7 @@ export default function LeaguesExplorer() {
   const [myClubId, setMyClubId] = useState<TeamId | null>(null);
   const [myLeagueId, setMyLeagueId] = useState<number | null>(null);
   const [myGroupId, setMyGroupId] = useState<number | null>(null);
+  const [activeTab, setActiveTab] = useState<PlayoffTab>('standings');
 
   const sortStandings = useCallback((teams: TeamRow[]) => {
     return [...teams].sort((a, b) => {
@@ -396,21 +639,6 @@ export default function LeaguesExplorer() {
   const regularSeasonComplete = regularTotalCount > 0 && regularPlayedCount === regularTotalCount;
   const remainingRegularMatches = Math.max(0, regularTotalCount - regularPlayedCount);
 
-  const officialPlayoffGroups = useMemo(() => {
-    const groupsByPhase = new Map<string, CompetitionMatchRow[]>();
-    (competitionState?.playoffMatches || []).forEach((match) => {
-      const phase = formatPhaseLabel(match.fase);
-      const current = groupsByPhase.get(phase) || [];
-      current.push(match);
-      groupsByPhase.set(phase, current);
-    });
-
-    return Array.from(groupsByPhase.entries()).map(([phase, matches]) => ({
-      phase,
-      matches: sortMatches(matches)
-    }));
-  }, [competitionState]);
-
   const projectedPromotionPairings = useMemo(
     () => buildBracketPairings(standings.slice(0, 4), 1),
     [standings]
@@ -422,28 +650,111 @@ export default function LeaguesExplorer() {
   );
 
   const teamDirectory = competitionState?.teamDirectory || {};
+  const hasOfficialPlayoffs = (competitionState?.playoffMatches.length || 0) > 0;
+  const playoffMatchesByPhase = useMemo(() => {
+    const grouped = new Map<string, CompetitionMatchRow[]>();
+    (competitionState?.playoffMatches || []).forEach((match) => {
+      const phase = normalizePhase(match.fase);
+      const current = grouped.get(phase) || [];
+      current.push(match);
+      grouped.set(phase, current);
+    });
+
+    return new Map(
+      Array.from(grouped.entries()).map(([phase, matches]) => [phase, sortMatches(matches)])
+    );
+  }, [competitionState]);
+
+  const officialPromotionSemifinals = playoffMatchesByPhase.get(PLAYOFF_PHASE.PROMO_SF) || [];
+  const officialPromotionFinal = (playoffMatchesByPhase.get(PLAYOFF_PHASE.PROMO_FINAL) || [])[0];
+  const officialRelegationSemifinals = playoffMatchesByPhase.get(PLAYOFF_PHASE.RELEG_SF) || [];
+  const officialRelegationFinal = (playoffMatchesByPhase.get(PLAYOFF_PHASE.RELEG_FINAL) || [])[0];
+
+  const promotionSemifinalCards = useMemo(() => {
+    if (officialPromotionSemifinals.length > 0) {
+      return officialPromotionSemifinals.map((match, index) =>
+        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`)
+      );
+    }
+
+    return projectedPromotionPairings.map((pairing, index) =>
+      buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`)
+    );
+  }, [officialPromotionSemifinals, projectedPromotionPairings, teamDirectory]);
+
+  const relegationSemifinalCards = useMemo(() => {
+    if (officialRelegationSemifinals.length > 0) {
+      return officialRelegationSemifinals.map((match, index) =>
+        buildOfficialMatchCard(match, teamDirectory, `Semifinal ${index + 1}`)
+      );
+    }
+
+    return projectedSurvivalPairings.map((pairing, index) =>
+      buildProjectedMatchCard(pairing, `Semifinal ${index + 1}`)
+    );
+  }, [officialRelegationSemifinals, projectedSurvivalPairings, teamDirectory]);
+
+  const promotionFinalCard = useMemo<BracketMatchCardData>(() => {
+    if (officialPromotionFinal) {
+      return buildOfficialMatchCard(officialPromotionFinal, teamDirectory, 'Final');
+    }
+
+    return {
+      id: 'promotion-final',
+      label: 'Final',
+      homeTeam:
+        getWinnerTeamFromMatch(officialPromotionSemifinals[0], teamDirectory) ||
+        buildPlaceholderTeam('promo-winner-sf1', 'Ganador SF1'),
+      awayTeam:
+        getWinnerTeamFromMatch(officialPromotionSemifinals[1], teamDirectory) ||
+        buildPlaceholderTeam('promo-winner-sf2', 'Ganador SF2'),
+      homeSeed: officialPromotionSemifinals.length === 0 ? 'SF1' : undefined,
+      awaySeed: officialPromotionSemifinals.length === 0 ? 'SF2' : undefined,
+      played: false,
+      footer: hasOfficialPlayoffs ? 'Pendiente de asignación oficial' : 'Cruce estimado según clasificación actual'
+    };
+  }, [officialPromotionFinal, officialPromotionSemifinals, teamDirectory, hasOfficialPlayoffs]);
+
+  const relegationFinalCard = useMemo<BracketMatchCardData>(() => {
+    if (officialRelegationFinal) {
+      return buildOfficialMatchCard(officialRelegationFinal, teamDirectory, 'Final');
+    }
+
+    return {
+      id: 'relegation-final',
+      label: 'Final',
+      homeTeam:
+        getWinnerTeamFromMatch(officialRelegationSemifinals[0], teamDirectory) ||
+        buildPlaceholderTeam('releg-winner-sf1', 'Ganador SF1'),
+      awayTeam:
+        getWinnerTeamFromMatch(officialRelegationSemifinals[1], teamDirectory) ||
+        buildPlaceholderTeam('releg-winner-sf2', 'Ganador SF2'),
+      homeSeed: officialRelegationSemifinals.length === 0 ? 'SF1' : undefined,
+      awaySeed: officialRelegationSemifinals.length === 0 ? 'SF2' : undefined,
+      played: false,
+      footer: hasOfficialPlayoffs ? 'Pendiente de asignación oficial' : 'Cruce estimado según clasificación actual'
+    };
+  }, [officialRelegationFinal, officialRelegationSemifinals, teamDirectory, hasOfficialPlayoffs]);
+
+  const playoffsModeLabel = !regularSeasonComplete
+    ? 'Pendiente de cierre regular'
+    : hasOfficialPlayoffs
+      ? 'Cuadro oficial'
+      : 'Cuadro provisional';
+  const standingsCardSubtitle = `${selectedLeagueName} • Clasificación Fase Regular`;
+  const playoffsCardSubtitle = `${selectedLeagueName} • Cuadro de Playoffs`;
+  const promotionStatus = officialPromotionFinal
+    ? 'Final oficial publicada'
+    : officialPromotionSemifinals.length > 0
+      ? 'Semifinales oficiales'
+      : 'Proyección actual';
+  const relegationStatus = officialRelegationFinal
+    ? 'Final oficial publicada'
+    : officialRelegationSemifinals.length > 0
+      ? 'Semifinales oficiales'
+      : 'Proyección actual';
   const isShowingDefault = selectedGroupId === myGroupId;
   const myTeamInSelectedGroup = standings.some((team) => team.id === myClubId);
-
-  const renderSeedRow = (
-    seed: string,
-    team: TeamRow | undefined,
-    tone: 'green' | 'red'
-  ) => {
-    const toneClasses =
-      tone === 'green'
-        ? 'border-green-500/20 bg-green-500/10 text-green-300'
-        : 'border-red-500/20 bg-red-500/10 text-red-300';
-
-    return (
-      <div className={`flex items-center justify-between gap-3 rounded-xl border px-3 py-2 ${toneClasses}`}>
-        <span className="text-[10px] font-black uppercase tracking-widest">{seed}</span>
-        <span className="text-right text-xs font-black uppercase tracking-wide text-white">
-          {team?.nombre || 'Por definir'}
-        </span>
-      </div>
-    );
-  };
 
   const resetToDefaultGroup = () => {
     if (!myLeagueId || !myGroupId) return;
@@ -505,7 +816,7 @@ export default function LeaguesExplorer() {
                 </p>
                 <p className="mt-2 text-xs text-slate-400 leading-relaxed">
                   {regularSeasonComplete
-                    ? officialPlayoffGroups.length > 0
+                    ? hasOfficialPlayoffs
                       ? 'Se han detectado cruces oficiales en la base de datos.'
                       : 'La regular ha terminado. Se muestra un cuadro provisional hasta que existan partidos oficiales.'
                     : `Faltan ${remainingRegularMatches} partidos de liga para cerrar el grupo y desbloquear el cuadro.`}
@@ -559,19 +870,48 @@ export default function LeaguesExplorer() {
 
           <div className="lg:col-span-3">
             <div className="bg-slate-900 border border-white/5 rounded-[2.5rem] overflow-hidden shadow-2xl">
-              <div className="p-8 border-b border-white/5 bg-white/5 flex justify-between items-center gap-4">
-                <div className="flex items-center gap-5">
-                  <div className="w-14 h-14 bg-cyan-500/10 rounded-2xl flex items-center justify-center text-cyan-500 border border-cyan-500/20 shadow-inner">
-                    <Medal size={28} />
+              <div className="p-8 border-b border-white/5 bg-white/5">
+                <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-5">
+                  <div className="flex items-center gap-5">
+                    <div className="w-14 h-14 bg-cyan-500/10 rounded-2xl flex items-center justify-center text-cyan-500 border border-cyan-500/20 shadow-inner">
+                      {activeTab === 'standings' ? <Medal size={28} /> : <Trophy size={28} />}
+                    </div>
+                    <div>
+                      <h3 className="text-2xl font-black italic uppercase text-white tracking-tighter">
+                        {selectedGroupName}
+                      </h3>
+                      <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-1">
+                        {activeTab === 'standings' ? standingsCardSubtitle : playoffsCardSubtitle}
+                      </p>
+                    </div>
                   </div>
-                  <div>
-                    <h3 className="text-2xl font-black italic uppercase text-white tracking-tighter">
-                      {selectedGroupName}
-                    </h3>
-                    <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-1">
-                      {selectedLeagueName} • Clasificación Fase Regular
-                    </p>
+
+                  <div className="rounded-2xl border border-white/10 bg-slate-950/60 px-4 py-2 text-[10px] font-black uppercase tracking-widest text-slate-300">
+                    {playoffsModeLabel}
                   </div>
+                </div>
+
+                <div className="mt-6 inline-flex rounded-2xl border border-white/10 bg-slate-950/70 p-1">
+                  <button
+                    onClick={() => setActiveTab('standings')}
+                    className={`px-4 py-2 rounded-[1rem] text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${
+                      activeTab === 'standings'
+                        ? 'bg-cyan-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Clasificación
+                  </button>
+                  <button
+                    onClick={() => setActiveTab('playoffs')}
+                    className={`px-4 py-2 rounded-[1rem] text-[10px] font-black uppercase tracking-[0.2em] transition-colors ${
+                      activeTab === 'playoffs'
+                        ? 'bg-cyan-500 text-slate-950'
+                        : 'text-slate-400 hover:text-white hover:bg-white/5'
+                    }`}
+                  >
+                    Playoffs
+                  </button>
                 </div>
               </div>
 
@@ -595,7 +935,7 @@ export default function LeaguesExplorer() {
                   </p>
                 </div>
               ) : (
-                <>
+                activeTab === 'standings' ? (
                   <div className="overflow-x-auto">
                     <table className="w-full text-left border-collapse">
                       <thead>
@@ -701,166 +1041,70 @@ export default function LeaguesExplorer() {
                       </div>
                     )}
                   </div>
-
-                  {standings.length > 0 && (
-                    <section className="border-t border-white/5 bg-slate-950/40 px-8 py-8">
-                      <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3 mb-6">
-                        <div>
-                          <h4 className="text-xl font-black uppercase tracking-tight text-white">
-                            Cuadro de Playoffs
-                          </h4>
-                          <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-1">
-                            Ascensos y descensos del grupo seleccionado
-                          </p>
-                        </div>
-                        <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                          {regularSeasonComplete
-                            ? officialPlayoffGroups.length > 0
-                              ? 'Modo oficial'
-                              : 'Modo provisional'
-                            : 'Pendiente de cierre regular'}
-                        </div>
+                ) : standings.length === 0 ? (
+                  <div className="p-12 text-center text-slate-500 text-sm font-bold uppercase tracking-widest">
+                    No hay equipos en este grupo todavía.
+                  </div>
+                ) : (
+                  <section className="bg-slate-950/40 px-8 py-8 space-y-5">
+                    <div className="flex flex-col md:flex-row md:items-end md:justify-between gap-3">
+                      <div>
+                        <h4 className="text-xl font-black uppercase tracking-tight text-white">
+                          Cuadro de cruces
+                        </h4>
+                        <p className="text-[10px] text-slate-500 font-bold uppercase tracking-[0.2em] mt-1">
+                          Ascensos y descensos del grupo seleccionado
+                        </p>
                       </div>
+                      <div className="text-[10px] font-black uppercase tracking-widest text-slate-400">
+                        {playoffsModeLabel}
+                      </div>
+                    </div>
 
-                      {!regularSeasonComplete ? (
-                        <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-5">
-                          <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">
-                            Cuadro bloqueado temporalmente
+                    {!regularSeasonComplete ? (
+                      <div className="rounded-3xl border border-amber-500/20 bg-amber-500/10 p-5">
+                        <p className="text-[10px] font-black uppercase tracking-widest text-amber-300">
+                          Cuadro bloqueado temporalmente
+                        </p>
+                        <p className="mt-3 text-sm text-slate-200 leading-relaxed">
+                          La fase regular aún no ha terminado en {selectedGroupName}. En cuanto se jueguen todos
+                          los partidos del grupo, aquí se abrirá el cuadro de cruces en formato playoff.
+                        </p>
+                      </div>
+                    ) : (
+                      <>
+                        <div className="rounded-[1.75rem] border border-cyan-500/15 bg-cyan-500/10 px-5 py-4">
+                          <p className="text-[10px] font-black uppercase tracking-[0.25em] text-cyan-300">
+                            {hasOfficialPlayoffs ? 'Cuadro oficial detectado' : 'Vista provisional'}
                           </p>
-                          <p className="mt-3 text-sm text-slate-200 leading-relaxed">
-                            La fase regular aún no ha terminado en {selectedGroupName}. En cuanto se jueguen todos
-                            los partidos del grupo, aquí aparecerán los cruces de playoff.
+                          <p className="mt-2 text-sm text-slate-200 leading-relaxed">
+                            {hasOfficialPlayoffs
+                              ? 'Los cruces ya existen en base de datos y se representan como bracket oficial.'
+                              : 'Los cruces se proyectan a partir de la clasificación actual hasta que el sistema publique los partidos oficiales.'}
                           </p>
                         </div>
-                      ) : officialPlayoffGroups.length > 0 ? (
-                        <div className="grid gap-4">
-                          {officialPlayoffGroups.map(({ phase, matches }) => (
-                            <div key={phase} className="rounded-3xl border border-cyan-500/15 bg-slate-900/70 p-5">
-                              <div className="flex items-center justify-between gap-3 mb-4">
-                                <div>
-                                  <p className="text-[10px] font-black uppercase tracking-widest text-cyan-300">
-                                    Fase detectada
-                                  </p>
-                                  <h5 className="text-lg font-black uppercase tracking-tight text-white">{phase}</h5>
-                                </div>
-                                <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                                  {matches.length} cruce{matches.length === 1 ? '' : 's'}
-                                </p>
-                              </div>
 
-                              <div className="grid gap-3">
-                                {matches.map((match) => {
-                                  const homeTeam =
-                                    teamDirectory[String(match.home_team_id)]?.nombre ||
-                                    `Equipo ${String(match.home_team_id)}`;
-                                  const awayTeam =
-                                    teamDirectory[String(match.away_team_id)]?.nombre ||
-                                    `Equipo ${String(match.away_team_id)}`;
+                        <BracketSection
+                          title="Ascenso"
+                          subtitle="Cruces 1º-4º"
+                          tone="green"
+                          status={promotionStatus}
+                          semifinals={promotionSemifinalCards}
+                          finalMatch={promotionFinalCard}
+                        />
 
-                                  return (
-                                    <div
-                                      key={match.id}
-                                      className="rounded-2xl border border-white/5 bg-slate-950/60 px-4 py-3"
-                                    >
-                                      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
-                                        <div>
-                                          <p className="text-[10px] font-black uppercase tracking-widest text-slate-500">
-                                            Jornada {match.jornada || '-'}
-                                          </p>
-                                          <div className="mt-2 text-sm font-black uppercase text-white">
-                                            {homeTeam} <span className="text-slate-600">vs</span> {awayTeam}
-                                          </div>
-                                        </div>
-                                        <div className="text-right">
-                                          {match.played ? (
-                                            <>
-                                              <div className="text-xl font-black text-white">
-                                                {match.home_score} - {match.away_score}
-                                              </div>
-                                              <div className="text-[10px] font-black uppercase tracking-widest text-emerald-300">
-                                                Finalizado
-                                              </div>
-                                            </>
-                                          ) : (
-                                            <div className="text-[10px] font-black uppercase tracking-widest text-amber-300">
-                                              Pendiente
-                                            </div>
-                                          )}
-                                        </div>
-                                      </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="grid xl:grid-cols-2 gap-4">
-                          <div className="rounded-3xl border border-green-500/20 bg-green-500/10 p-5">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-green-300">
-                              Ascenso provisional
-                            </p>
-                            <h5 className="mt-2 text-lg font-black uppercase tracking-tight text-white">
-                              Semifinales 1º-4º
-                            </h5>
-                            <div className="mt-4 space-y-3">
-                              {projectedPromotionPairings.map((pairing) => (
-                                <div key={pairing.label} className="rounded-2xl border border-green-500/15 bg-slate-950/50 p-4">
-                                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">
-                                    {pairing.label}
-                                  </div>
-                                  <div className="space-y-2">
-                                    {renderSeedRow(pairing.homeSeed, pairing.home, 'green')}
-                                    {renderSeedRow(pairing.awaySeed, pairing.away, 'green')}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="mt-4 rounded-2xl border border-dashed border-green-500/20 px-4 py-3">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-green-300">
-                                Final
-                              </p>
-                              <p className="mt-2 text-sm font-bold text-slate-300">
-                                Ganador SF1 vs Ganador SF2
-                              </p>
-                            </div>
-                          </div>
-
-                          <div className="rounded-3xl border border-red-500/20 bg-red-500/10 p-5">
-                            <p className="text-[10px] font-black uppercase tracking-widest text-red-300">
-                              Descenso / permanencia provisional
-                            </p>
-                            <h5 className="mt-2 text-lg font-black uppercase tracking-tight text-white">
-                              Cruces 5º-8º
-                            </h5>
-                            <div className="mt-4 space-y-3">
-                              {projectedSurvivalPairings.map((pairing) => (
-                                <div key={pairing.label} className="rounded-2xl border border-red-500/15 bg-slate-950/50 p-4">
-                                  <div className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-3">
-                                    {pairing.label}
-                                  </div>
-                                  <div className="space-y-2">
-                                    {renderSeedRow(pairing.homeSeed, pairing.home, 'red')}
-                                    {renderSeedRow(pairing.awaySeed, pairing.away, 'red')}
-                                  </div>
-                                </div>
-                              ))}
-                            </div>
-                            <div className="mt-4 rounded-2xl border border-dashed border-red-500/20 px-4 py-3">
-                              <p className="text-[10px] font-black uppercase tracking-widest text-red-300">
-                                Final
-                              </p>
-                              <p className="mt-2 text-sm font-bold text-slate-300">
-                                Ganador SF1 vs Ganador SF2
-                              </p>
-                            </div>
-                          </div>
-                        </div>
-                      )}
-                    </section>
-                  )}
-                </>
+                        <BracketSection
+                          title="Permanencia"
+                          subtitle="Cruces 5º-8º"
+                          tone="red"
+                          status={relegationStatus}
+                          semifinals={relegationSemifinalCards}
+                          finalMatch={relegationFinalCard}
+                        />
+                      </>
+                    )}
+                  </section>
+                )
               )}
             </div>
           </div>
