@@ -60,6 +60,16 @@ export type CompetitionProgressionResult = {
   message: string;
 };
 
+export type CompetitionProgressionSweepResult = {
+  status: 'ok' | 'skipped';
+  groupsChecked: number;
+  groupsAdvanced: number;
+  createdMatches: number;
+  createdPhases: string[];
+  errors: Array<{ groupId: number; reason: string }>;
+  message: string;
+};
+
 type SeasonRolloverResult = {
   status: 'ok' | 'skipped';
   message: string;
@@ -370,6 +380,67 @@ export const advanceGroupPlayoffsForGroup = async (
     createdMatches: 0,
     createdPhases: [],
     message: 'No había nuevos cruces de playoff pendientes por generar.'
+  };
+};
+
+export const advanceAllGroupPlayoffs = async (
+  supabaseAdmin: SupabaseClient
+): Promise<CompetitionProgressionSweepResult> => {
+  const { data: groups, error: groupsError } = await supabaseAdmin
+    .from('grupos_liga')
+    .select('id')
+    .order('id', { ascending: true });
+
+  if (groupsError) {
+    throw new Error(`No se pudieron cargar grupos para avanzar playoffs: ${toErrorText(groupsError)}`);
+  }
+
+  const groupIds = [...new Set(
+    ((groups || []) as Array<{ id?: number | string | null }>)
+      .map((group) => Number(group.id))
+      .filter((groupId) => Number.isInteger(groupId) && groupId > 0)
+  )];
+
+  let groupsAdvanced = 0;
+  let createdMatches = 0;
+  const createdPhaseSet = new Set<string>();
+  const errors: Array<{ groupId: number; reason: string }> = [];
+
+  for (const groupId of groupIds) {
+    try {
+      const result = await advanceGroupPlayoffsForGroup(supabaseAdmin, groupId);
+      if (result.createdMatches > 0) {
+        groupsAdvanced += 1;
+        createdMatches += result.createdMatches;
+        result.createdPhases.forEach((phase) => createdPhaseSet.add(phase));
+      }
+    } catch (error) {
+      errors.push({ groupId, reason: toErrorText(error) });
+    }
+  }
+
+  if (createdMatches > 0) {
+    return {
+      status: 'ok',
+      groupsChecked: groupIds.length,
+      groupsAdvanced,
+      createdMatches,
+      createdPhases: Array.from(createdPhaseSet),
+      errors,
+      message: `Se generaron ${createdMatches} cruces de playoff pendientes en ${groupsAdvanced} grupos.`
+    };
+  }
+
+  return {
+    status: 'skipped',
+    groupsChecked: groupIds.length,
+    groupsAdvanced,
+    createdMatches,
+    createdPhases: [],
+    errors,
+    message: errors.length > 0
+      ? `No se generaron cruces nuevos; ${errors.length} grupos tuvieron errores.`
+      : 'No había nuevos cruces de playoff pendientes por generar.'
   };
 };
 
