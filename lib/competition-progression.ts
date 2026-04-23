@@ -45,6 +45,7 @@ type MatchInsertRow = {
   away_team_id: TeamId;
   home_score: number;
   away_score: number;
+  match_date?: string;
 };
 
 type BracketPairing = {
@@ -82,6 +83,17 @@ const PHASE = {
   RELEG_SF: 'RELEG_SF',
   RELEG_FINAL: 'RELEG_FINAL'
 } as const;
+const MATCH_SCHEDULE_TIME_ZONE = 'Europe/Madrid';
+const MADRID_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
+  timeZone: MATCH_SCHEDULE_TIME_ZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23'
+});
 
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
@@ -95,11 +107,69 @@ const toErrorText = (error: unknown) => {
 
 const normalizePhase = (phase?: string | null) => String(phase || PHASE.REGULAR).trim().toUpperCase();
 
+const getFormatterPartNumber = (
+  parts: Intl.DateTimeFormatPart[],
+  type: Intl.DateTimeFormatPartTypes
+) => {
+  const value = parts.find((part) => part.type === type)?.value;
+  return Number(value || '0');
+};
+
+const buildUtcDateFromMadridLocal = (
+  year: number,
+  monthIndex: number,
+  day: number,
+  hour: number,
+  minute: number
+) => {
+  const initialUtcGuess = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
+  const zonedParts = MADRID_DATE_TIME_FORMATTER.formatToParts(initialUtcGuess);
+  const actualLocalMs = Date.UTC(
+    getFormatterPartNumber(zonedParts, 'year'),
+    getFormatterPartNumber(zonedParts, 'month') - 1,
+    getFormatterPartNumber(zonedParts, 'day'),
+    getFormatterPartNumber(zonedParts, 'hour'),
+    getFormatterPartNumber(zonedParts, 'minute'),
+    getFormatterPartNumber(zonedParts, 'second')
+  );
+  const desiredLocalMs = Date.UTC(year, monthIndex, day, hour, minute, 0);
+  return new Date(initialUtcGuess.getTime() + (desiredLocalMs - actualLocalMs));
+};
+
+const computeMatchDateFromJornada = (jornada: number | null | undefined) => {
+  const numericRound = Number(jornada);
+  if (!Number.isFinite(numericRound)) return null;
+
+  const round = Math.max(1, Math.trunc(numericRound));
+  const weekOffset = Math.floor((round - 1) / 2);
+  const isSaturday = round % 2 === 0;
+  const daysToAdd = weekOffset * 7 + (isSaturday ? 3 : 0);
+  const baseDate = new Date(Date.UTC(2026, 2, 4 + daysToAdd, 0, 0, 0));
+
+  return buildUtcDateFromMadridLocal(
+    baseDate.getUTCFullYear(),
+    baseDate.getUTCMonth(),
+    baseDate.getUTCDate(),
+    isSaturday ? 12 : 18,
+    30
+  );
+};
+
 const isUniqueViolation = (error: unknown) => {
   if (!error || typeof error !== 'object') return false;
   const maybeCode = 'code' in error ? String((error as { code?: string }).code || '') : '';
   const maybeMessage = 'message' in error ? String((error as { message?: string }).message || '') : '';
   return maybeCode === '23505' || maybeMessage.toLowerCase().includes('duplicate key');
+};
+
+const hasMissingStandingsColumns = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('column clubes.pj does not exist') ||
+    message.includes('column clubes.v does not exist') ||
+    message.includes('column clubes.d does not exist') ||
+    message.includes('column clubes.pts does not exist')
+  );
 };
 
 const sortStandings = (teams: GroupClubRow[]) =>
@@ -112,6 +182,60 @@ const sortStandings = (teams: GroupClubRow[]) =>
     if (lossesDiff !== 0) return lossesDiff;
     return String(a.nombre || '').localeCompare(String(b.nombre || ''));
   });
+
+const deriveStandingsFromRegularMatches = (
+  teams: GroupClubRow[],
+  regularMatches: GroupMatchRow[]
+) => {
+  const statsByTeam = new Map<TeamId, { pts: number; v: number; d: number }>(
+    teams.map((team) => [String(team.id), { pts: 0, v: 0, d: 0 }])
+  );
+
+  regularMatches
+    .filter((match) => match.played)
+    .forEach((match) => {
+      const homeId = String(match.home_team_id);
+      const awayId = String(match.away_team_id);
+      const home = statsByTeam.get(homeId);
+      const away = statsByTeam.get(awayId);
+      if (!home || !away) return;
+
+      const homeScore = Number(match.home_score || 0);
+      const awayScore = Number(match.away_score || 0);
+
+      if (homeScore > awayScore) {
+        home.v += 1;
+        home.pts += 2;
+        away.d += 1;
+        away.pts += 1;
+        return;
+      }
+
+      if (awayScore > homeScore) {
+        away.v += 1;
+        away.pts += 2;
+        home.d += 1;
+        home.pts += 1;
+        return;
+      }
+
+      home.d += 1;
+      away.d += 1;
+      home.pts += 1;
+      away.pts += 1;
+    });
+
+  return teams.map((team) => {
+    const stats = statsByTeam.get(String(team.id));
+    if (!stats) return team;
+    return {
+      ...team,
+      pts: stats.pts,
+      v: stats.v,
+      d: stats.d
+    };
+  });
+};
 
 const dedupeMatches = (matches: GroupMatchRow[]) =>
   Array.from(new Map(matches.map((match) => [match.id, match])).values()).sort((a, b) => {
@@ -146,16 +270,28 @@ const insertMatches = async (supabaseAdmin: SupabaseClient, rows: MatchInsertRow
 };
 
 const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number) => {
-  const { data: teams, error: teamsError } = await supabaseAdmin
+  const teamsResultWithStandings = await supabaseAdmin
     .from('clubes')
     .select('id, nombre, grupo_id, league_id, status, pts, v, d')
     .eq('grupo_id', groupId);
+
+  let groupTeams = (teamsResultWithStandings.data || []) as GroupClubRow[];
+  let teamsError = teamsResultWithStandings.error;
+
+  if (teamsError && hasMissingStandingsColumns(teamsError)) {
+    const teamsResultWithoutStandings = await supabaseAdmin
+      .from('clubes')
+      .select('id, nombre, grupo_id, league_id, status')
+      .eq('grupo_id', groupId);
+
+    groupTeams = (teamsResultWithoutStandings.data || []) as GroupClubRow[];
+    teamsError = teamsResultWithoutStandings.error;
+  }
 
   if (teamsError) {
     throw new Error(`No se pudieron cargar los clubes del grupo ${groupId}: ${toErrorText(teamsError)}`);
   }
 
-  const groupTeams = (teams || []) as GroupClubRow[];
   const teamIds = groupTeams.map((team) => String(team.id));
   if (teamIds.length === 0) {
     return { teams: groupTeams, matches: [] as GroupMatchRow[] };
@@ -208,7 +344,12 @@ const createSemifinalsIfNeeded = async (
     phaseMatches.set(phase, current);
   });
 
-  const nextRound = matches.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
+  const regularMaxRound = matches
+    .filter((match) => normalizePhase(match.fase) === PHASE.REGULAR)
+    .reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0);
+  const fallbackMaxRound = matches.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0);
+  const nextRound = (regularMaxRound || fallbackMaxRound) + 1;
+  const nextRoundMatchDate = computeMatchDateFromJornada(nextRound)?.toISOString();
   const inserts: MatchInsertRow[] = [];
   const createdPhases: string[] = [];
 
@@ -224,7 +365,8 @@ const createSemifinalsIfNeeded = async (
           home_team_id: pairing.homeTeamId,
           away_team_id: pairing.awayTeamId,
           home_score: 0,
-          away_score: 0
+          away_score: 0,
+          ...(nextRoundMatchDate ? { match_date: nextRoundMatchDate } : {})
         }))
       );
       createdPhases.push(PHASE.PROMO_SF);
@@ -243,7 +385,8 @@ const createSemifinalsIfNeeded = async (
           home_team_id: pairing.homeTeamId,
           away_team_id: pairing.awayTeamId,
           home_score: 0,
-          away_score: 0
+          away_score: 0,
+          ...(nextRoundMatchDate ? { match_date: nextRoundMatchDate } : {})
         }))
       );
       createdPhases.push(PHASE.RELEG_SF);
@@ -268,21 +411,23 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
 
   const inserts: MatchInsertRow[] = [];
   const createdPhases: string[] = [];
-  const nextRound = matches.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
 
   const promoSemis = phaseMatches.get(PHASE.PROMO_SF) || [];
   const promoFinals = phaseMatches.get(PHASE.PROMO_FINAL) || [];
   if (promoSemis.length === 2 && promoFinals.length === 0 && promoSemis.every((match) => match.played)) {
     const winners = promoSemis.map(getWinnerTeamId).filter(Boolean) as TeamId[];
     if (winners.length === 2 && winners[0] !== winners[1]) {
+      const finalRound = promoSemis.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
+      const finalMatchDate = computeMatchDateFromJornada(finalRound)?.toISOString();
       inserts.push({
-        jornada: nextRound,
+        jornada: finalRound,
         fase: PHASE.PROMO_FINAL,
         played: false,
         home_team_id: winners[0],
         away_team_id: winners[1],
         home_score: 0,
-        away_score: 0
+        away_score: 0,
+        ...(finalMatchDate ? { match_date: finalMatchDate } : {})
       });
       createdPhases.push(PHASE.PROMO_FINAL);
     }
@@ -293,14 +438,17 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
   if (relegSemis.length === 2 && relegFinals.length === 0 && relegSemis.every((match) => match.played)) {
     const winners = relegSemis.map(getWinnerTeamId).filter(Boolean) as TeamId[];
     if (winners.length === 2 && winners[0] !== winners[1]) {
+      const finalRound = relegSemis.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
+      const finalMatchDate = computeMatchDateFromJornada(finalRound)?.toISOString();
       inserts.push({
-        jornada: nextRound,
+        jornada: finalRound,
         fase: PHASE.RELEG_FINAL,
         played: false,
         home_team_id: winners[0],
         away_team_id: winners[1],
         home_score: 0,
-        away_score: 0
+        away_score: 0,
+        ...(finalMatchDate ? { match_date: finalMatchDate } : {})
       });
       createdPhases.push(PHASE.RELEG_FINAL);
     }
@@ -350,7 +498,7 @@ export const advanceGroupPlayoffsForGroup = async (
     };
   }
 
-  const standings = sortStandings(teams);
+  const standings = sortStandings(deriveStandingsFromRegularMatches(teams, regularMatches));
   const semisResult = await createSemifinalsIfNeeded(supabaseAdmin, standings, matches);
   if (semisResult.createdMatches > 0) {
     return {
