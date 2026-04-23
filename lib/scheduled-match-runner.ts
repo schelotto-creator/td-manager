@@ -9,7 +9,7 @@ import {
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
 import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
-import { advanceGroupPlayoffsForMatch } from '@/lib/competition-progression';
+import { advanceAllGroupPlayoffs, advanceGroupPlayoffsForMatch } from '@/lib/competition-progression';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -92,6 +92,12 @@ export type ScheduledMatchesRunSummary = {
   alreadyPlayed: number;
   skipped: number;
   pendingWithoutDate: number;
+  playoffProgression: {
+    groupsChecked: number;
+    groupsAdvanced: number;
+    createdMatches: number;
+    errors: Array<{ groupId: number; reason: string }>;
+  };
   warnings: string[];
   errors: Array<{ matchId: number; reason: string }>;
 };
@@ -1015,6 +1021,27 @@ export const runScheduledMatches = async (
   const prepCutoff = new Date(now.getTime() + prepLeadMinutes * 60_000);
   const { selectFields, supportsPreparedSimulationColumns } =
     await detectMatchSchemaCapabilities(supabaseAdmin);
+  const preflightWarnings: string[] = [];
+  const playoffProgression = {
+    groupsChecked: 0,
+    groupsAdvanced: 0,
+    createdMatches: 0,
+    errors: [] as Array<{ groupId: number; reason: string }>
+  };
+
+  try {
+    const progressionSweep = await advanceAllGroupPlayoffs(supabaseAdmin);
+    playoffProgression.groupsChecked = progressionSweep.groupsChecked;
+    playoffProgression.groupsAdvanced = progressionSweep.groupsAdvanced;
+    playoffProgression.createdMatches = progressionSweep.createdMatches;
+    playoffProgression.errors = progressionSweep.errors;
+
+    if (progressionSweep.createdMatches > 0 || progressionSweep.errors.length > 0) {
+      preflightWarnings.push(progressionSweep.message);
+    }
+  } catch (progressionSweepError) {
+    preflightWarnings.push(`No se pudo revisar la generación global de playoffs: ${toErrorText(progressionSweepError)}`);
+  }
 
   const { count: totalDueWithoutLimit, error: totalDueError } = await supabaseAdmin
     .from('matches')
@@ -1122,7 +1149,8 @@ export const runScheduledMatches = async (
     alreadyPlayed: 0,
     skipped: 0,
     pendingWithoutDate: Math.max(0, Number(pendingWithoutDate || 0) - recoveredMatchDateCount),
-    warnings: [],
+    playoffProgression,
+    warnings: preflightWarnings,
     errors: []
   };
 
