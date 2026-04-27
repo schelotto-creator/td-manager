@@ -85,6 +85,21 @@ const toErrorText = (error: unknown) => {
   return String(error);
 };
 
+const hasMissingStandingsColumns = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('column clubes.pj does not exist') ||
+    message.includes('column clubes.v does not exist') ||
+    message.includes('column clubes.d does not exist') ||
+    message.includes('column clubes.pts does not exist') ||
+    (
+      message.includes('clubes') &&
+      message.includes('schema cache') &&
+      ['pj', 'pts', 'v', 'd'].some((column) => message.includes(`'${column}' column`))
+    )
+  );
+};
+
 const pickRandom = <T>(items: T[]) =>
   items[Math.floor(Math.random() * items.length)];
 
@@ -147,7 +162,7 @@ export const buildSeasonDraftProspect = ({
 };
 
 const fetchSeasonDraftContext = async (supabase: SupabaseClient) => {
-  const [{ data: groups, error: groupsError }, { data: clubs, error: clubsError }] = await Promise.all([
+  const [{ data: groups, error: groupsError }, clubsResultWithStandings] = await Promise.all([
     supabase.from('grupos_liga').select('id, nombre'),
     supabase
       .from('clubes')
@@ -155,13 +170,25 @@ const fetchSeasonDraftContext = async (supabase: SupabaseClient) => {
       .not('grupo_id', 'is', null)
   ]);
 
+  let clubRows = clubsResultWithStandings.data as SeasonDraftClubRow[] | null;
+  let clubsError = clubsResultWithStandings.error;
+
+  if (clubsError && hasMissingStandingsColumns(clubsError)) {
+    const fallbackClubs = await supabase
+      .from('clubes')
+      .select('id, nombre, grupo_id, league_id, is_bot, status')
+      .not('grupo_id', 'is', null);
+    clubRows = fallbackClubs.data;
+    clubsError = fallbackClubs.error;
+  }
+
   if (groupsError || clubsError) {
     throw new Error(`No se pudo preparar el draft de temporada: ${toErrorText(groupsError || clubsError)}`);
   }
 
   return {
     groups: ((groups || []) as SeasonDraftGroupRow[]) || [],
-    clubs: ((clubs || []) as SeasonDraftClubRow[]) || []
+    clubs: ((clubRows || []) as SeasonDraftClubRow[]) || []
   };
 };
 

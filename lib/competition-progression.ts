@@ -117,13 +117,29 @@ const isUniqueViolation = (error: unknown) => {
   return maybeCode === '23505' || maybeMessage.toLowerCase().includes('duplicate key');
 };
 
+const isMissingAutomationRunsTable = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('automation_runs') &&
+    (message.includes('does not exist') ||
+      message.includes('could not find the table') ||
+      message.includes('schema cache'))
+  );
+};
+
 const hasMissingStandingsColumns = (error: unknown) => {
   const message = toErrorText(error).toLowerCase();
+  const missingSchemaCacheColumn =
+    message.includes('clubes') &&
+    message.includes('schema cache') &&
+    ['pj', 'pts', 'v', 'd'].some((column) => message.includes(`'${column}' column`));
+
   return (
     message.includes('column clubes.pj does not exist') ||
     message.includes('column clubes.v does not exist') ||
     message.includes('column clubes.d does not exist') ||
-    message.includes('column clubes.pts does not exist')
+    message.includes('column clubes.pts does not exist') ||
+    missingSchemaCacheColumn
   );
 };
 
@@ -567,6 +583,7 @@ const tryClaimAutomationRun = async (
 
   if (!error) return true;
   if (isUniqueViolation(error)) return false;
+  if (isMissingAutomationRunsTable(error)) return true;
   throw new Error(`No se pudo registrar el rollover de temporada: ${toErrorText(error)}`);
 };
 
@@ -580,14 +597,14 @@ const updateAutomationRun = async (
     .update({ details })
     .eq('run_key', runKey);
 
-  if (error) {
+  if (error && !isMissingAutomationRunsTable(error)) {
     throw new Error(`No se pudo actualizar el registro del rollover: ${toErrorText(error)}`);
   }
 };
 
 const deleteAutomationRun = async (supabaseAdmin: SupabaseClient, runKey: string) => {
   const { error } = await supabaseAdmin.from('automation_runs').delete().eq('run_key', runKey);
-  if (error) {
+  if (error && !isMissingAutomationRunsTable(error)) {
     throw new Error(`No se pudo liberar el bloqueo del rollover: ${toErrorText(error)}`);
   }
 };
@@ -631,7 +648,7 @@ const getLoserTeamId = (match: GroupMatchRow) => {
 export const maybeFinalizeSeasonRollover = async (
   supabaseAdmin: SupabaseClient
 ): Promise<SeasonRolloverResult> => {
-  const [{ data: matches, error: matchesError }, { data: leagues, error: leaguesError }, { data: groups, error: groupsError }, { data: clubs, error: clubsError }] =
+  const [{ data: matches, error: matchesError }, { data: leagues, error: leaguesError }, { data: groups, error: groupsError }, clubsResultWithStandings] =
     await Promise.all([
       supabaseAdmin
         .from('matches')
@@ -641,6 +658,17 @@ export const maybeFinalizeSeasonRollover = async (
       supabaseAdmin.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
       supabaseAdmin.from('clubes').select('id, nombre, league_id, grupo_id, is_bot, status, pts, v, d')
     ]);
+
+  let clubRows = clubsResultWithStandings.data as GroupClubRow[] | null;
+  let clubsError = clubsResultWithStandings.error;
+
+  if (clubsError && hasMissingStandingsColumns(clubsError)) {
+    const fallbackClubs = await supabaseAdmin
+      .from('clubes')
+      .select('id, nombre, league_id, grupo_id, is_bot, status');
+    clubRows = fallbackClubs.data;
+    clubsError = fallbackClubs.error;
+  }
 
   if (matchesError || leaguesError || groupsError || clubsError) {
     throw new Error(
@@ -667,7 +695,7 @@ export const maybeFinalizeSeasonRollover = async (
 
   const sortedLeagues = ((leagues || []) as LeagueRow[]) || [];
   const allGroups = ((groups || []) as LeagueGroupRow[]) || [];
-  const allClubs = ((clubs || []) as GroupClubRow[]) || [];
+  const allClubs = ((clubRows || []) as GroupClubRow[]) || [];
 
   const matchesSignature = `season-rollover:season-${activeSeasonNumber}:max-${Math.max(...allMatches.map((match) => Number(match.id || 0)))}:count-${allMatches.length}`;
 
@@ -693,6 +721,21 @@ export const maybeFinalizeSeasonRollover = async (
     current.push(match);
     matchesByGroup.set(homeClub.grupo_id, current);
   });
+
+  const clubsById = new Map(allClubs.map((club) => [String(club.id), club]));
+  for (const group of allGroups) {
+    const groupClubs = allClubs.filter((club) => Number(club.grupo_id) === Number(group.id));
+    const groupRegularMatches = (matchesByGroup.get(group.id) || [])
+      .filter((match) => normalizePhase(match.fase) === PHASE.REGULAR);
+    deriveStandingsFromRegularMatches(groupClubs, groupRegularMatches)
+      .forEach((clubWithStats) => {
+        const club = clubsById.get(String(clubWithStats.id));
+        if (!club) return;
+        club.pts = clubWithStats.pts;
+        club.v = clubWithStats.v;
+        club.d = clubWithStats.d;
+      });
+  }
 
   const promoChampionByGroup = new Map<number, TeamId>();
   const relegatedByGroup = new Map<number, TeamId>();
@@ -816,7 +859,9 @@ export const maybeFinalizeSeasonRollover = async (
       .neq('id', 0);
 
     if (resetStandingsError) {
-      throw new Error(`No se pudieron resetear clasificaciones: ${toErrorText(resetStandingsError)}`);
+      if (!hasMissingStandingsColumns(resetStandingsError)) {
+        throw new Error(`No se pudieron resetear clasificaciones: ${toErrorText(resetStandingsError)}`);
+      }
     }
 
     await updateAutomationRun(supabaseAdmin, matchesSignature, {

@@ -888,10 +888,26 @@ export default function AdminDashboard() {
     addLog('🎓 Iniciando evento de Draft de Temporada...');
 
     try {
-      const [{ data: grupos, error: gruposError }, { data: clubes, error: clubesError }] = await Promise.all([
+      const [{ data: grupos, error: gruposError }, clubesResultWithStandings] = await Promise.all([
         supabase.from('grupos_liga').select('id, nombre'),
         supabase.from('clubes').select('id, nombre, grupo_id, pts, v, d, is_bot, status').not('grupo_id', 'is', null)
       ]);
+
+      let clubes = clubesResultWithStandings.data as any[] | null;
+      let clubesError = clubesResultWithStandings.error;
+      const clubesErrorText = String(clubesError?.message || clubesError?.details || '').toLowerCase();
+      if (
+        clubesError &&
+        clubesErrorText.includes('clubes') &&
+        ['pts', 'v', 'd'].some((column) => clubesErrorText.includes(`'${column}' column`))
+      ) {
+        const fallbackClubes = await supabase
+          .from('clubes')
+          .select('id, nombre, grupo_id, is_bot, status')
+          .not('grupo_id', 'is', null);
+        clubes = fallbackClubes.data;
+        clubesError = fallbackClubes.error;
+      }
 
       if (gruposError) throw gruposError;
       if (clubesError) throw clubesError;
