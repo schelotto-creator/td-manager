@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { Globe, Medal, Trophy, Play, Shield, Activity, ArrowUpCircle, ArrowDownCircle, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
+import { getLatestSeasonNumber } from '@/lib/match-seasons';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number };
@@ -102,6 +102,17 @@ const sortMatches = (matches: CompetitionMatchRow[]) =>
 
 const dedupeMatches = (matches: CompetitionMatchRow[]) =>
   sortMatches(Array.from(new Map(matches.map((match) => [match.id, match])).values()));
+
+const fetchActiveSeasonNumber = async () => {
+  const { data, error } = await supabase
+    .from('matches')
+    .select('season_number')
+    .order('season_number', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+  return getLatestSeasonNumber((data || []) as Array<{ season_number?: number | null }>);
+};
 
 const buildBracketPairings = (teams: TeamRow[], startSeed: number): BracketPairing[] => {
   if (teams.length < 4) return [];
@@ -531,15 +542,18 @@ export default function LeaguesExplorer() {
         teamIds.map((id) => [id, { pj: 0, v: 0, d: 0, pts: 0 }])
       );
 
+      const activeSeasonNumber = await fetchActiveSeasonNumber();
       const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
         await Promise.all([
           supabase
             .from('matches')
             .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
+            .eq('season_number', activeSeasonNumber)
             .in('home_team_id', teamIds),
           supabase
             .from('matches')
             .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
+            .eq('season_number', activeSeasonNumber)
             .in('away_team_id', teamIds)
         ]);
 
@@ -552,11 +566,10 @@ export default function LeaguesExplorer() {
         return;
       }
 
-      const storedMatches = dedupeMatches([
+      const mergedMatches = dedupeMatches([
         ...(((homeMatches || []) as CompetitionMatchRow[]) || []),
         ...(((awayMatches || []) as CompetitionMatchRow[]) || [])
       ]);
-      const mergedMatches = filterMatchesBySeason(storedMatches, getLatestSeasonNumber(storedMatches));
 
       const regularMatches = mergedMatches.filter((match) => {
         const phase = normalizePhase(match.fase);

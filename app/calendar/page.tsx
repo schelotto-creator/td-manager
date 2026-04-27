@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { CalendarDays, ChevronLeft, ChevronRight, Activity, Trophy, Play, Shield, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
+import { getLatestSeasonNumber } from '@/lib/match-seasons';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number; };
@@ -120,6 +120,16 @@ const buildBracketPairings = (teams: TeamStanding[], startSeed: number): Bracket
       away: teams[2]
     }
   ];
+};
+const fetchActiveSeasonNumber = async () => {
+  const { data, error } = await supabase
+    .from('matches')
+    .select('season_number')
+    .order('season_number', { ascending: false })
+    .limit(1);
+
+  if (error) throw error;
+  return getLatestSeasonNumber((data || []) as Array<{ season_number?: number | null }>);
 };
 const buildProjectedPlayoffMatches = (
   context: GroupCalendarContext,
@@ -389,15 +399,18 @@ export default function CalendarPage() {
       };
     }
 
+    const activeSeasonNumber = await fetchActiveSeasonNumber();
     const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
       await Promise.all([
         supabase
           .from('matches')
           .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .eq('season_number', activeSeasonNumber)
           .in('home_team_id', teamIds),
         supabase
           .from('matches')
           .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .eq('season_number', activeSeasonNumber)
           .in('away_team_id', teamIds)
       ]);
 
@@ -407,7 +420,7 @@ export default function CalendarPage() {
     }
 
     const teamIdSet = new Set(teamIds);
-    const allStoredMatches = dedupeMatches([
+    const allMatches = dedupeMatches([
       ...(((homeMatches || []) as DbMatchRow[]) || []),
       ...(((awayMatches || []) as DbMatchRow[]) || [])
     ]).filter(
@@ -415,7 +428,6 @@ export default function CalendarPage() {
         teamIdSet.has(String(match.home_team_id)) &&
         teamIdSet.has(String(match.away_team_id))
     );
-    const allMatches = filterMatchesBySeason(allStoredMatches, getLatestSeasonNumber(allStoredMatches));
 
     const regularMatches = allMatches.filter((match) => normalizePhase(match.fase) === 'REGULAR');
     const regularSeasonComplete = regularMatches.length > 0 && regularMatches.every((match) => match.played);
@@ -581,7 +593,12 @@ export default function CalendarPage() {
     if (!silent) setLoading(true);
     setLoadError(null);
     try {
-      await triggerAutomationPulse();
+      if (!silent) {
+        void triggerAutomationPulse().then((ran) => {
+          if (ran) void loadMatches(grupoId, j, { silent: true });
+        });
+      }
+
       let context = await fetchGroupCalendarContext(grupoId);
       if (context.standings.length === 0) {
         setMatches([]);

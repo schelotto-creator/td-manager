@@ -108,6 +108,6 @@ select
   s.efficiency
 from season_stats s
 join public.players p on p.id = s.player_id
-left join public.clubes c on c.id::text = s.team_id::text;
+left join public.clubes c on c.id::text = p.team_id::text;
 
 grant select on public.view_player_season_stats to anon, authenticated, service_role;
