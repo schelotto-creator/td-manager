@@ -14,6 +14,7 @@ import {
   advanceGroupPlayoffsForMatch,
   maybeFinalizeSeasonRollover
 } from '@/lib/competition-progression';
+import { computeMatchDateFromJornada, hasMissingSeasonColumn } from '@/lib/match-seasons';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -22,6 +23,7 @@ type MatchRow = {
   id: number;
   jornada: number;
   fase?: string | null;
+  season_number?: number | null;
   played: boolean;
   home_team_id: TeamId;
   away_team_id: TeamId;
@@ -120,20 +122,9 @@ type PrepareSimulationResult =
 
 const DEFAULT_SCHEDULED_MATCH_PREP_MINUTES = 15;
 const MATCH_SELECT_FIELDS =
-  'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
+  'id,jornada,fase,season_number,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
 const LEGACY_MATCH_SELECT_FIELDS =
   'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play';
-const MATCH_SCHEDULE_TIME_ZONE = 'Europe/Madrid';
-const MADRID_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
-  timeZone: MATCH_SCHEDULE_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hourCycle: 'h23'
-});
 
 const chunkArray = <T>(items: T[], size: number) => {
   if (size <= 0) return [items];
@@ -233,54 +224,6 @@ const getPreparedSimulation = (match: MatchRow): PreparedSimulation | null => {
       ? (match.simulated_player_stats as PlayerGameStat[])
       : []
   };
-};
-
-const getFormatterPartNumber = (
-  parts: Intl.DateTimeFormatPart[],
-  type: Intl.DateTimeFormatPartTypes
-) => {
-  const value = parts.find((part) => part.type === type)?.value;
-  return Number(value || '0');
-};
-
-const buildUtcDateFromMadridLocal = (
-  year: number,
-  monthIndex: number,
-  day: number,
-  hour: number,
-  minute: number
-) => {
-  const initialUtcGuess = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
-  const zonedParts = MADRID_DATE_TIME_FORMATTER.formatToParts(initialUtcGuess);
-  const actualLocalMs = Date.UTC(
-    getFormatterPartNumber(zonedParts, 'year'),
-    getFormatterPartNumber(zonedParts, 'month') - 1,
-    getFormatterPartNumber(zonedParts, 'day'),
-    getFormatterPartNumber(zonedParts, 'hour'),
-    getFormatterPartNumber(zonedParts, 'minute'),
-    getFormatterPartNumber(zonedParts, 'second')
-  );
-  const desiredLocalMs = Date.UTC(year, monthIndex, day, hour, minute, 0);
-  return new Date(initialUtcGuess.getTime() + (desiredLocalMs - actualLocalMs));
-};
-
-const computeMatchDateFromJornada = (jornada: number | null | undefined) => {
-  const numericRound = Number(jornada);
-  if (!Number.isFinite(numericRound)) return null;
-
-  const round = Math.max(1, Math.trunc(numericRound));
-  const weekOffset = Math.floor((round - 1) / 2);
-  const isSaturday = round % 2 === 0;
-  const daysToAdd = weekOffset * 7 + (isSaturday ? 3 : 0);
-  const baseDate = new Date(Date.UTC(2026, 2, 4 + daysToAdd, 0, 0, 0));
-
-  return buildUtcDateFromMadridLocal(
-    baseDate.getUTCFullYear(),
-    baseDate.getUTCMonth(),
-    baseDate.getUTCDate(),
-    isSaturday ? 12 : 18,
-    30
-  );
 };
 
 const compareMatchesByDate = (a: MatchRow, b: MatchRow) => {
@@ -956,7 +899,7 @@ const detectMatchSchemaCapabilities = async (supabaseAdmin: SupabaseClient) => {
     };
   }
 
-  if (hasMissingSimulationColumns(error)) {
+  if (hasMissingSimulationColumns(error) || hasMissingSeasonColumn(error)) {
     return {
       selectFields: LEGACY_MATCH_SELECT_FIELDS,
       supportsPreparedSimulationColumns: false
@@ -1110,7 +1053,7 @@ export const runScheduledMatches = async (
     }
 
     for (const rawMatch of (missingDateMatchesData || []) as unknown as MatchRow[]) {
-      const inferredMatchDate = computeMatchDateFromJornada(rawMatch.jornada);
+      const inferredMatchDate = computeMatchDateFromJornada(rawMatch.jornada, rawMatch.season_number);
       if (!inferredMatchDate) continue;
 
       const inferredMatch: MatchRow = {
