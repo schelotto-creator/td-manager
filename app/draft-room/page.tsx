@@ -29,6 +29,7 @@ import {
   Trophy
 } from 'lucide-react';
 import { CLUB_STATUS, getSeasonDraftPoolTag } from '@/lib/season-draft';
+import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
 
 const FLAGS: Record<string, string> = {
   'USA': '🇺🇸', 'ESP': '🇪🇸', 'ARG': '🇦🇷', 'LTU': '🇱🇹', 
@@ -81,6 +82,15 @@ type DraftOrderItem = {
   wins: number;
   losses: number;
   diff: number;
+};
+type DraftMatchRow = {
+  home_team_id: string | number;
+  away_team_id: string | number;
+  home_score: number | null;
+  away_score: number | null;
+  played: boolean;
+  fase?: string | null;
+  season_number?: number | null;
 };
 
 export default function DraftRoom() {
@@ -161,13 +171,19 @@ export default function DraftRoom() {
 
     const { data: playedMatches } = await supabase
       .from('matches')
-      .select('home_team_id, away_team_id, home_score, away_score, played, fase')
+      .select('home_team_id, away_team_id, home_score, away_score, played, fase, season_number')
       .in('home_team_id', teamIds)
       .in('away_team_id', teamIds)
       .eq('played', true)
       .eq('fase', 'REGULAR');
 
-    (playedMatches || []).forEach((match: any) => {
+    const regularPlayedMatches = (playedMatches || []) as DraftMatchRow[];
+    const currentSeasonMatches = filterMatchesBySeason(
+      regularPlayedMatches,
+      getLatestSeasonNumber(regularPlayedMatches)
+    );
+
+    currentSeasonMatches.forEach((match) => {
       const homeId = String(match.home_team_id);
       const awayId = String(match.away_team_id);
       const homeStats = stats.get(homeId);
