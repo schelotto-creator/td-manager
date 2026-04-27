@@ -37,6 +37,12 @@ import {
   serializeGitHubIntegrationConfig,
   type GitHubIntegrationConfig
 } from '@/lib/github-integration-config';
+import {
+  computeMatchDateFromJornada,
+  filterMatchesBySeason,
+  getLatestSeasonNumber,
+  getNextSeasonNumber
+} from '@/lib/match-seasons';
 
 // --- MASIVE DATA GENERATION LISTS (10x Bigger) ---
 const CIUDADES = [
@@ -1004,7 +1010,7 @@ export default function AdminDashboard() {
 
   // --- NUEVO: GENERADOR DE CALENDARIO ---
   const generarCalendario = async () => {
-    if (!confirm('¿Seguro que quieres borrar el calendario actual y generar uno nuevo de 14 jornadas para todos los equipos?')) return;
+    if (!confirm('¿Generar el calendario de la próxima temporada? La temporada anterior se conservará como histórico.')) return;
     
     setIsGenerating(true);
     setProgress(0);
@@ -1023,10 +1029,28 @@ export default function AdminDashboard() {
           return;
         }
 
-        // 1. Limpiamos partidos antiguos y reseteamos clasificaciones
-        await supabase.from('matches').delete().neq('id', 0);
+        const { data: existingMatches, error: existingMatchesError } = await supabase
+          .from('matches')
+          .select('id, season_number, played');
+
+        if (existingMatchesError) throw existingMatchesError;
+
+        const storedMatches = ((existingMatches || []) as Array<{ id: number; season_number?: number | null; played?: boolean | null }>);
+        const activeSeasonNumber = getLatestSeasonNumber(storedMatches);
+        const activeSeasonMatches = filterMatchesBySeason(storedMatches, activeSeasonNumber);
+
+        if (activeSeasonMatches.some((match) => !match.played)) {
+          addLog(`❌ La temporada ${activeSeasonNumber} aún tiene partidos pendientes.`);
+          addLog('No se genera otra temporada encima de una liga activa.');
+          return;
+        }
+
+        const nextSeasonNumber = getNextSeasonNumber(storedMatches);
+        addLog(`Temporada detectada: ${activeSeasonNumber}. Nuevo calendario: temporada ${nextSeasonNumber}.`);
+
+        // 1. Conservamos partidos históricos y reseteamos solo la clasificación viva.
         await supabase.from('clubes').update({ pj: 0, v: 0, d: 0, pts: 0 }).neq('id', 0);
-        addLog("Limpiadas clasificaciones y calendarios anteriores.");
+        addLog("Clasificaciones reiniciadas; los calendarios anteriores se conservan.");
 
         // 2. Extraemos todos los grupos y clubes
         const { data: grupos } = await supabase.from('grupos_liga').select('id');
@@ -1042,7 +1066,7 @@ export default function AdminDashboard() {
             const equipos = clubes.filter(c => c.grupo_id === grupo.id);
             if (equipos.length !== 8) continue; // Si un grupo no tiene 8, se lo salta por seguridad
 
-            let teamIds = equipos.map(e => e.id);
+            const teamIds = equipos.map(e => e.id);
             const numEquipos = teamIds.length;
 
             // FASE DE IDA (7 Jornadas)
@@ -1057,17 +1081,25 @@ export default function AdminDashboard() {
                     }
 
                     // Partido de Ida
+                    const firstLegRound = r + 1;
+                    const firstLegDate = computeMatchDateFromJornada(firstLegRound, nextSeasonNumber)?.toISOString();
                     todosLosPartidos.push({
-                        jornada: r + 1,
+                        jornada: firstLegRound,
+                        season_number: nextSeasonNumber,
                         home_team_id: home, away_team_id: away,
-                        played: false, fase: 'REGULAR', home_score: 0, away_score: 0
+                        played: false, fase: 'REGULAR', home_score: 0, away_score: 0,
+                        ...(firstLegDate ? { match_date: firstLegDate } : {})
                     });
 
                     // Partido de Vuelta (Se invierte local/visitante y se suma 7 a la jornada)
+                    const secondLegRound = r + 1 + 7;
+                    const secondLegDate = computeMatchDateFromJornada(secondLegRound, nextSeasonNumber)?.toISOString();
                     todosLosPartidos.push({
-                        jornada: r + 1 + 7,
+                        jornada: secondLegRound,
+                        season_number: nextSeasonNumber,
                         home_team_id: away, away_team_id: home,
-                        played: false, fase: 'REGULAR', home_score: 0, away_score: 0
+                        played: false, fase: 'REGULAR', home_score: 0, away_score: 0,
+                        ...(secondLegDate ? { match_date: secondLegDate } : {})
                     });
                 }
                 // Rotar array (todos menos el índice 0) para generar el siguiente cruce
@@ -1079,6 +1111,7 @@ export default function AdminDashboard() {
         }
 
         addLog(`Cálculo terminado: ${todosLosPartidos.length} partidos oficiales listos.`);
+        addLog(`Temporada ${nextSeasonNumber}: ida/vuelta programada sin tocar el histórico.`);
         addLog(`Subiendo al servidor en bloques de 500 para evitar saturación...`);
 
         // 4. Inserción masiva en base de datos (Chunking)
@@ -1089,7 +1122,7 @@ export default function AdminDashboard() {
             if (error) throw error;
         }
 
-        addLog("✅ ¡CALENDARIO GLOBAL COMPLETADO CON ÉXITO!");
+        addLog(`✅ ¡CALENDARIO DE TEMPORADA ${nextSeasonNumber} COMPLETADO CON ÉXITO!`);
 
     } catch (err: any) {
         addLog(`❌ ERROR: ${err.message}`);
@@ -1299,7 +1332,7 @@ export default function AdminDashboard() {
                     <p className="text-[10px] text-slate-400 uppercase tracking-widest">Generador de Calendario</p>
                   </div>
                 </div>
-                <p className="text-xs text-slate-400 mb-6 leading-relaxed">Programa las 14 jornadas de Fase Regular (Ida y Vuelta) para los 42 grupos. Resetea clasificaciones.</p>
+                <p className="text-xs text-slate-400 mb-6 leading-relaxed">Programa las 14 jornadas de Fase Regular (Ida y Vuelta) para la siguiente temporada. Conserva el histórico y resetea la clasificación viva.</p>
                 <button
                   onClick={generarCalendario}
                   disabled={isGenerating || loading}
