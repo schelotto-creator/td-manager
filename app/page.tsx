@@ -91,9 +91,10 @@ export default function Dashboard() {
 
         const { data: matches } = await supabase
           .from('matches')
-          .select('jornada,home_team_id,away_team_id,played')
+          .select('jornada,season_number,home_team_id,away_team_id,played')
           .eq('played', false)
           .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
+          .order('season_number', { ascending: false })
           .order('jornada', { ascending: true })
           .limit(1);
 
