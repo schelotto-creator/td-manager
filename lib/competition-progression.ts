@@ -6,6 +6,11 @@ import {
   type SeasonDraftGroupRow,
   type StartSeasonDraftResult
 } from '@/lib/season-draft-generator';
+import {
+  computeMatchDateFromJornada,
+  filterMatchesBySeason,
+  getLatestSeasonNumber
+} from '@/lib/match-seasons';
 
 type TeamId = string;
 
@@ -37,6 +42,7 @@ type GroupMatchRow = {
   id: number;
   jornada: number;
   fase?: string | null;
+  season_number?: number | null;
   played: boolean;
   home_team_id: TeamId;
   away_team_id: TeamId;
@@ -47,6 +53,7 @@ type GroupMatchRow = {
 type MatchInsertRow = {
   jornada: number;
   fase: string;
+  season_number?: number;
   played: boolean;
   home_team_id: TeamId;
   away_team_id: TeamId;
@@ -90,17 +97,6 @@ const PHASE = {
   RELEG_SF: 'RELEG_SF',
   RELEG_FINAL: 'RELEG_FINAL'
 } as const;
-const MATCH_SCHEDULE_TIME_ZONE = 'Europe/Madrid';
-const MADRID_DATE_TIME_FORMATTER = new Intl.DateTimeFormat('en-GB', {
-  timeZone: MATCH_SCHEDULE_TIME_ZONE,
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  second: '2-digit',
-  hourCycle: 'h23'
-});
 
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
@@ -113,54 +109,6 @@ const toErrorText = (error: unknown) => {
 };
 
 const normalizePhase = (phase?: string | null) => String(phase || PHASE.REGULAR).trim().toUpperCase();
-
-const getFormatterPartNumber = (
-  parts: Intl.DateTimeFormatPart[],
-  type: Intl.DateTimeFormatPartTypes
-) => {
-  const value = parts.find((part) => part.type === type)?.value;
-  return Number(value || '0');
-};
-
-const buildUtcDateFromMadridLocal = (
-  year: number,
-  monthIndex: number,
-  day: number,
-  hour: number,
-  minute: number
-) => {
-  const initialUtcGuess = new Date(Date.UTC(year, monthIndex, day, hour, minute, 0));
-  const zonedParts = MADRID_DATE_TIME_FORMATTER.formatToParts(initialUtcGuess);
-  const actualLocalMs = Date.UTC(
-    getFormatterPartNumber(zonedParts, 'year'),
-    getFormatterPartNumber(zonedParts, 'month') - 1,
-    getFormatterPartNumber(zonedParts, 'day'),
-    getFormatterPartNumber(zonedParts, 'hour'),
-    getFormatterPartNumber(zonedParts, 'minute'),
-    getFormatterPartNumber(zonedParts, 'second')
-  );
-  const desiredLocalMs = Date.UTC(year, monthIndex, day, hour, minute, 0);
-  return new Date(initialUtcGuess.getTime() + (desiredLocalMs - actualLocalMs));
-};
-
-const computeMatchDateFromJornada = (jornada: number | null | undefined) => {
-  const numericRound = Number(jornada);
-  if (!Number.isFinite(numericRound)) return null;
-
-  const round = Math.max(1, Math.trunc(numericRound));
-  const weekOffset = Math.floor((round - 1) / 2);
-  const isSaturday = round % 2 === 0;
-  const daysToAdd = weekOffset * 7 + (isSaturday ? 3 : 0);
-  const baseDate = new Date(Date.UTC(2026, 2, 4 + daysToAdd, 0, 0, 0));
-
-  return buildUtcDateFromMadridLocal(
-    baseDate.getUTCFullYear(),
-    baseDate.getUTCMonth(),
-    baseDate.getUTCDate(),
-    isSaturday ? 12 : 18,
-    30
-  );
-};
 
 const isUniqueViolation = (error: unknown) => {
   if (!error || typeof error !== 'object') return false;
@@ -308,11 +256,11 @@ const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number)
     await Promise.all([
       supabaseAdmin
         .from('matches')
-        .select('id, jornada, fase, played, home_team_id, away_team_id, home_score, away_score')
+        .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
         .in('home_team_id', teamIds),
       supabaseAdmin
         .from('matches')
-        .select('id, jornada, fase, played, home_team_id, away_team_id, home_score, away_score')
+        .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
         .in('away_team_id', teamIds)
     ]);
 
@@ -323,7 +271,7 @@ const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number)
   }
 
   const teamIdSet = new Set(teamIds);
-  const mergedMatches = dedupeMatches([
+  const allGroupMatches = dedupeMatches([
     ...(((homeMatches || []) as GroupMatchRow[]) || []),
     ...(((awayMatches || []) as GroupMatchRow[]) || [])
   ]).filter(
@@ -331,6 +279,7 @@ const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number)
       teamIdSet.has(String(match.home_team_id)) &&
       teamIdSet.has(String(match.away_team_id))
   );
+  const mergedMatches = filterMatchesBySeason(allGroupMatches, getLatestSeasonNumber(allGroupMatches));
 
   return {
     teams: groupTeams,
@@ -356,7 +305,8 @@ const createSemifinalsIfNeeded = async (
     .reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0);
   const fallbackMaxRound = matches.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0);
   const nextRound = (regularMaxRound || fallbackMaxRound) + 1;
-  const nextRoundMatchDate = computeMatchDateFromJornada(nextRound)?.toISOString();
+  const seasonNumber = getLatestSeasonNumber(matches);
+  const nextRoundMatchDate = computeMatchDateFromJornada(nextRound, seasonNumber)?.toISOString();
   const inserts: MatchInsertRow[] = [];
   const createdPhases: string[] = [];
 
@@ -368,6 +318,7 @@ const createSemifinalsIfNeeded = async (
         ...promoPairings.map((pairing) => ({
           jornada: nextRound,
           fase: PHASE.PROMO_SF,
+          season_number: seasonNumber,
           played: false,
           home_team_id: pairing.homeTeamId,
           away_team_id: pairing.awayTeamId,
@@ -388,6 +339,7 @@ const createSemifinalsIfNeeded = async (
         ...relegPairings.map((pairing) => ({
           jornada: nextRound,
           fase: PHASE.RELEG_SF,
+          season_number: seasonNumber,
           played: false,
           home_team_id: pairing.homeTeamId,
           away_team_id: pairing.awayTeamId,
@@ -418,6 +370,7 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
 
   const inserts: MatchInsertRow[] = [];
   const createdPhases: string[] = [];
+  const seasonNumber = getLatestSeasonNumber(matches);
 
   const promoSemis = phaseMatches.get(PHASE.PROMO_SF) || [];
   const promoFinals = phaseMatches.get(PHASE.PROMO_FINAL) || [];
@@ -425,10 +378,11 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
     const winners = promoSemis.map(getWinnerTeamId).filter(Boolean) as TeamId[];
     if (winners.length === 2 && winners[0] !== winners[1]) {
       const finalRound = promoSemis.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
-      const finalMatchDate = computeMatchDateFromJornada(finalRound)?.toISOString();
+      const finalMatchDate = computeMatchDateFromJornada(finalRound, seasonNumber)?.toISOString();
       inserts.push({
         jornada: finalRound,
         fase: PHASE.PROMO_FINAL,
+        season_number: seasonNumber,
         played: false,
         home_team_id: winners[0],
         away_team_id: winners[1],
@@ -446,10 +400,11 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
     const winners = relegSemis.map(getWinnerTeamId).filter(Boolean) as TeamId[];
     if (winners.length === 2 && winners[0] !== winners[1]) {
       const finalRound = relegSemis.reduce((maxRound, match) => Math.max(maxRound, Number(match.jornada || 0)), 0) + 1;
-      const finalMatchDate = computeMatchDateFromJornada(finalRound)?.toISOString();
+      const finalMatchDate = computeMatchDateFromJornada(finalRound, seasonNumber)?.toISOString();
       inserts.push({
         jornada: finalRound,
         fase: PHASE.RELEG_FINAL,
+        season_number: seasonNumber,
         played: false,
         home_team_id: winners[0],
         away_team_id: winners[1],
@@ -680,7 +635,7 @@ export const maybeFinalizeSeasonRollover = async (
     await Promise.all([
       supabaseAdmin
         .from('matches')
-        .select('id, jornada, fase, played, home_team_id, away_team_id, home_score, away_score')
+        .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
         .order('id', { ascending: true }),
       supabaseAdmin.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
       supabaseAdmin.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
@@ -693,7 +648,9 @@ export const maybeFinalizeSeasonRollover = async (
     );
   }
 
-  const allMatches = ((matches || []) as GroupMatchRow[]) || [];
+  const storedMatches = ((matches || []) as GroupMatchRow[]) || [];
+  const activeSeasonNumber = getLatestSeasonNumber(storedMatches);
+  const allMatches = filterMatchesBySeason(storedMatches, activeSeasonNumber);
   if (allMatches.length === 0) {
     return {
       status: 'skipped',
@@ -712,7 +669,7 @@ export const maybeFinalizeSeasonRollover = async (
   const allGroups = ((groups || []) as LeagueGroupRow[]) || [];
   const allClubs = ((clubs || []) as GroupClubRow[]) || [];
 
-  const matchesSignature = `season-rollover:max-${Math.max(...allMatches.map((match) => Number(match.id || 0)))}:count-${allMatches.length}`;
+  const matchesSignature = `season-rollover:season-${activeSeasonNumber}:max-${Math.max(...allMatches.map((match) => Number(match.id || 0)))}:count-${allMatches.length}`;
 
   const groupsByLeague = new Map<number, LeagueGroupRow[]>();
   allGroups.forEach((group) => {
@@ -862,13 +819,10 @@ export const maybeFinalizeSeasonRollover = async (
       throw new Error(`No se pudieron resetear clasificaciones: ${toErrorText(resetStandingsError)}`);
     }
 
-    const { error: deleteMatchesError } = await supabaseAdmin.from('matches').delete().neq('id', 0);
-    if (deleteMatchesError) {
-      throw new Error(`No se pudo limpiar el calendario anterior: ${toErrorText(deleteMatchesError)}`);
-    }
-
     await updateAutomationRun(supabaseAdmin, matchesSignature, {
       status: 'ok',
+      season_closed: activeSeasonNumber,
+      next_season: activeSeasonNumber + 1,
       moved_clubs: moveOperations.length,
       moved_team_ids: moveOperations.map((operation) => operation.clubId),
       season_draft: seasonDraftResult
@@ -894,7 +848,7 @@ export const maybeFinalizeSeasonRollover = async (
 
   return {
     status: 'ok',
-    message: `Temporada cerrada. ${movementMessage}. ${draftMessage} Se reseteo el calendario global.`
+    message: `Temporada ${activeSeasonNumber} cerrada. ${movementMessage}. ${draftMessage} El calendario historico se conserva; la proxima temporada sera la ${activeSeasonNumber + 1}.`
   };
 };
 
