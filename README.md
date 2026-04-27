@@ -41,6 +41,8 @@ El proyecto incluye un cron backend en `app/api/cron/season-tick/route.ts` que e
 
 - Precálculo automático del replay antes de la hora oficial del partido.
 - Cierre oficial de partidos con `played = false` y `match_date <= now`.
+- Generación de cruces de playoff y cierre automático de temporada al terminar las finales.
+- Ascensos/descensos, reset de calendario y activación del Draft de Temporada para clubes de usuario.
 - Mantenimiento semanal (forma + reset de entrenos) mediante la RPC `run_weekly_maintenance`.
 - Cálculo de finanzas semanal (salarios + mantenimiento) ejecutado directamente en el endpoint (TypeScript).
 
