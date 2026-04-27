@@ -5,6 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { CalendarDays, ChevronLeft, ChevronRight, Activity, Trophy, Play, Shield, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number; };
@@ -37,6 +38,7 @@ type DbMatchRow = {
   id: number;
   jornada: number;
   fase?: string | null;
+  season_number?: number | null;
   home_team_id: TeamId;
   away_team_id: TeamId;
   home_score: number;
@@ -391,11 +393,11 @@ export default function CalendarPage() {
       await Promise.all([
         supabase
           .from('matches')
-          .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
           .in('home_team_id', teamIds),
         supabase
           .from('matches')
-          .select('id, jornada, fase, home_team_id, away_team_id, home_score, away_score, played, match_date')
+          .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
           .in('away_team_id', teamIds)
       ]);
 
@@ -405,7 +407,7 @@ export default function CalendarPage() {
     }
 
     const teamIdSet = new Set(teamIds);
-    const allMatches = dedupeMatches([
+    const allStoredMatches = dedupeMatches([
       ...(((homeMatches || []) as DbMatchRow[]) || []),
       ...(((awayMatches || []) as DbMatchRow[]) || [])
     ]).filter(
@@ -413,6 +415,7 @@ export default function CalendarPage() {
         teamIdSet.has(String(match.home_team_id)) &&
         teamIdSet.has(String(match.away_team_id))
     );
+    const allMatches = filterMatchesBySeason(allStoredMatches, getLatestSeasonNumber(allStoredMatches));
 
     const regularMatches = allMatches.filter((match) => normalizePhase(match.fase) === 'REGULAR');
     const regularSeasonComplete = regularMatches.length > 0 && regularMatches.every((match) => match.played);
