@@ -82,9 +82,10 @@ export async function POST(request: NextRequest) {
       const viewerTeamId = String(club.id);
       const { data: viewerMatches, error: viewerMatchesError } = await supabaseAdmin
         .from('matches')
-        .select('id, jornada')
+        .select('id, jornada, season_number')
         .in('fase', ['PROMO_SF', 'PROMO_FINAL', 'RELEG_SF', 'RELEG_FINAL'])
         .or(`home_team_id.eq.${viewerTeamId},away_team_id.eq.${viewerTeamId}`)
+        .order('season_number', { ascending: false })
         .order('jornada', { ascending: false })
         .order('id', { ascending: false })
         .limit(1);
