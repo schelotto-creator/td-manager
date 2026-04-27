@@ -85,23 +85,22 @@ with active_season as (
 season_stats as (
   select
     ps.player_id,
-    ps.team_id,
     count(distinct ps.match_id)::integer as games_played,
     avg(coalesce(ps.points, 0))::double precision as ppg,
     avg(coalesce(ps.rebounds, 0))::double precision as rpg,
     avg(coalesce(ps.assists, 0))::double precision as apg,
-    avg(coalesce(ps.efficiency, coalesce(ps.points, 0) + coalesce(ps.rebounds, 0) + coalesce(ps.assists, 0)))::double precision as efficiency
+    avg(coalesce(ps.points, 0) + coalesce(ps.rebounds, 0) + coalesce(ps.assists, 0))::double precision as efficiency
   from public.player_stats ps
   join public.matches m on m.id = ps.match_id
   where m.season_number = (select season_number from active_season)
-  group by ps.player_id, ps.team_id
+  group by ps.player_id
 )
 select
   p.id,
   p.name,
   p.position,
   c.nombre as team_name,
-  p.team_id,
+  p.team_id::text as team_id,
   s.games_played,
   s.ppg,
   s.rpg,
