@@ -1,5 +1,11 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CLUB_STATUS } from '@/lib/season-draft';
+import {
+  startSeasonDraft,
+  type SeasonDraftClubRow,
+  type SeasonDraftGroupRow,
+  type StartSeasonDraftResult
+} from '@/lib/season-draft-generator';
 
 type TeamId = string;
 
@@ -8,6 +14,7 @@ type GroupClubRow = {
   nombre: string;
   grupo_id: number | null;
   league_id?: number | null;
+  is_bot?: boolean | null;
   status?: string | null;
   pts?: number | null;
   v?: number | null;
@@ -71,7 +78,7 @@ export type CompetitionProgressionSweepResult = {
   message: string;
 };
 
-type SeasonRolloverResult = {
+export type SeasonRolloverResult = {
   status: 'ok' | 'skipped';
   message: string;
 };
@@ -666,7 +673,7 @@ const getLoserTeamId = (match: GroupMatchRow) => {
   return winnerId === String(match.home_team_id) ? String(match.away_team_id) : String(match.home_team_id);
 };
 
-const maybeFinalizeSeasonRollover = async (
+export const maybeFinalizeSeasonRollover = async (
   supabaseAdmin: SupabaseClient
 ): Promise<SeasonRolloverResult> => {
   const [{ data: matches, error: matchesError }, { data: leagues, error: leaguesError }, { data: groups, error: groupsError }, { data: clubs, error: clubsError }] =
@@ -677,7 +684,7 @@ const maybeFinalizeSeasonRollover = async (
         .order('id', { ascending: true }),
       supabaseAdmin.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
       supabaseAdmin.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
-      supabaseAdmin.from('clubes').select('id, nombre, league_id, grupo_id, status')
+      supabaseAdmin.from('clubes').select('id, nombre, league_id, grupo_id, is_bot, status, pts, v, d')
     ]);
 
   if (matchesError || leaguesError || groupsError || clubsError) {
@@ -780,13 +787,6 @@ const maybeFinalizeSeasonRollover = async (
     }
   }
 
-  if (moveOperations.length === 0) {
-    return {
-      status: 'skipped',
-      message: 'No se encontraron ascensos/descensos completos para aplicar.'
-    };
-  }
-
   const claimed = await tryClaimAutomationRun(supabaseAdmin, matchesSignature, {
     status: 'started',
     match_count: allMatches.length,
@@ -799,6 +799,8 @@ const maybeFinalizeSeasonRollover = async (
       message: 'El cierre de temporada ya fue procesado por otro flujo.'
     };
   }
+
+  let seasonDraftResult: StartSeasonDraftResult | null = null;
 
   try {
     const moveResults = await Promise.all(
@@ -819,6 +821,38 @@ const maybeFinalizeSeasonRollover = async (
       throw new Error(`No se pudieron aplicar ascensos/descensos: ${toErrorText(moveError)}`);
     }
 
+    const moveByClubId = new Map(
+      moveOperations.map((operation) => [operation.clubId, operation])
+    );
+    const draftGroups: SeasonDraftGroupRow[] = allGroups.map((group) => ({
+      id: group.id,
+      nombre: group.nombre
+    }));
+    const draftClubs: SeasonDraftClubRow[] = allClubs.map((club) => {
+      const movedClub = moveByClubId.get(String(club.id));
+      return {
+        id: club.id,
+        nombre: club.nombre,
+        league_id: movedClub?.targetLeagueId ?? club.league_id ?? null,
+        grupo_id: movedClub?.targetGroupId ?? club.grupo_id ?? null,
+        is_bot: club.is_bot ?? false,
+        status: club.status ?? null,
+        pts: club.pts ?? 0,
+        v: club.v ?? 0,
+        d: club.d ?? 0
+      };
+    });
+
+    seasonDraftResult = await startSeasonDraft(supabaseAdmin, {
+      groups: draftGroups,
+      clubs: draftClubs,
+      deleteOldPool: true
+    });
+
+    if (seasonDraftResult.status === 'skipped') {
+      throw new Error(seasonDraftResult.message);
+    }
+
     const { error: resetStandingsError } = await supabaseAdmin
       .from('clubes')
       .update({ pj: 0, v: 0, d: 0, pts: 0 })
@@ -836,16 +870,31 @@ const maybeFinalizeSeasonRollover = async (
     await updateAutomationRun(supabaseAdmin, matchesSignature, {
       status: 'ok',
       moved_clubs: moveOperations.length,
-      moved_team_ids: moveOperations.map((operation) => operation.clubId)
+      moved_team_ids: moveOperations.map((operation) => operation.clubId),
+      season_draft: seasonDraftResult
+        ? {
+            human_clubs: seasonDraftResult.humanClubs,
+            bot_clubs: seasonDraftResult.botClubs,
+            prospects_created: seasonDraftResult.prospectsCreated,
+            old_prospects_deleted: seasonDraftResult.oldProspectsDeleted
+          }
+        : null
     });
   } catch (error) {
     await deleteAutomationRun(supabaseAdmin, matchesSignature);
     throw error;
   }
 
+  const movementMessage = moveOperations.length > 0
+    ? `Se aplicaron ${moveOperations.length / 2} ascensos/descensos`
+    : 'No habia ascensos/descensos completos que aplicar';
+  const draftMessage = seasonDraftResult
+    ? `Draft iniciado para ${seasonDraftResult.humanClubs} equipos de usuario (${seasonDraftResult.prospectsCreated} prospectos).`
+    : 'Draft no iniciado.';
+
   return {
     status: 'ok',
-    message: `Temporada cerrada. Se aplicaron ${moveOperations.length / 2} ascensos/descensos y se reseteó el calendario global.`
+    message: `Temporada cerrada. ${movementMessage}. ${draftMessage} Se reseteo el calendario global.`
   };
 };
 
