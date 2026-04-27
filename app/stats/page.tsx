@@ -15,6 +15,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
 
 type CategoryKey = 'ppg' | 'rpg' | 'apg' | 'efficiency';
 
@@ -37,6 +38,11 @@ type RawPlayerStatsRow = {
   points: number;
   rebounds: number;
   assists: number;
+};
+
+type MatchSeasonRow = {
+  id?: number;
+  season_number?: number | null;
 };
 
 type PlayerMetaRow = {
@@ -313,12 +319,49 @@ export default function StatsPage() {
         return;
       }
 
+      const { data: latestSeasonRows, error: latestSeasonError } = await supabase
+        .from('matches')
+        .select('season_number')
+        .order('season_number', { ascending: false })
+        .limit(1);
+
+      if (latestSeasonError) throw latestSeasonError;
+
+      const activeSeasonNumber = getLatestSeasonNumber((latestSeasonRows || []) as MatchSeasonRow[]);
+      const statMatchIds = [...new Set(
+        allRows
+          .map((row) => Number(row.match_id))
+          .filter((matchId) => Number.isFinite(matchId))
+      )];
+      const activeMatchIds = new Set<number>();
+
+      for (const matchBatch of chunkArray(statMatchIds, 200)) {
+        const { data, error } = await supabase
+          .from('matches')
+          .select('id,season_number')
+          .in('id', matchBatch);
+
+        if (error) throw error;
+
+        filterMatchesBySeason((data || []) as MatchSeasonRow[], activeSeasonNumber)
+          .forEach((match) => {
+            const matchId = Number(match.id);
+            if (Number.isFinite(matchId)) activeMatchIds.add(matchId);
+          });
+      }
+
+      const currentSeasonRows = allRows.filter((row) => activeMatchIds.has(Number(row.match_id)));
+      if (currentSeasonRows.length === 0) {
+        setStats([]);
+        return;
+      }
+
       const aggregates = new Map<
         number,
         { matches: Set<number>; rows: number; points: number; rebounds: number; assists: number }
       >();
 
-      allRows.forEach((row) => {
+      currentSeasonRows.forEach((row) => {
         const playerId = Number(row.player_id);
         if (!Number.isFinite(playerId) || !playersById.has(playerId)) return;
 
