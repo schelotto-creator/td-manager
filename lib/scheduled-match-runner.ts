@@ -9,7 +9,11 @@ import {
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
 import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
-import { advanceAllGroupPlayoffs, advanceGroupPlayoffsForMatch } from '@/lib/competition-progression';
+import {
+  advanceAllGroupPlayoffs,
+  advanceGroupPlayoffsForMatch,
+  maybeFinalizeSeasonRollover
+} from '@/lib/competition-progression';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1041,6 +1045,15 @@ export const runScheduledMatches = async (
     }
   } catch (progressionSweepError) {
     preflightWarnings.push(`No se pudo revisar la generación global de playoffs: ${toErrorText(progressionSweepError)}`);
+  }
+
+  try {
+    const rolloverResult = await maybeFinalizeSeasonRollover(supabaseAdmin);
+    if (rolloverResult.status === 'ok') {
+      preflightWarnings.push(rolloverResult.message);
+    }
+  } catch (rolloverError) {
+    preflightWarnings.push(`No se pudo revisar el cierre de temporada: ${toErrorText(rolloverError)}`);
   }
 
   const { count: totalDueWithoutLimit, error: totalDueError } = await supabaseAdmin
