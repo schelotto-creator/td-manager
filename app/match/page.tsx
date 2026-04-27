@@ -48,6 +48,7 @@ type MatchRow = {
   id: number;
   jornada: number;
   fase?: string | null;
+  season_number?: number | null;
   played: boolean;
   match_date?: string | null;
   home_team_id: TeamId;
@@ -966,6 +967,7 @@ function MatchEnginePageContent() {
             .select('*')
             .or(`home_team_id.eq.${myTeamId},away_team_id.eq.${myTeamId}`)
             .eq('played', false)
+            .order('season_number', { ascending: false })
             .order('jornada', { ascending: true })
             .limit(1);
 
@@ -977,6 +979,7 @@ function MatchEnginePageContent() {
               .select('*')
               .or(`home_team_id.eq.${myTeamId},away_team_id.eq.${myTeamId}`)
               .eq('played', true)
+              .order('season_number', { ascending: false })
               .order('jornada', { ascending: false })
               .limit(1);
             if (playedData && playedData[0]) matchData = playedData[0] as MatchRow;
