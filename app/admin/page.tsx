@@ -1026,7 +1026,12 @@ export default function AdminDashboard() {
 
   // --- NUEVO: GENERADOR DE CALENDARIO ---
   const generarCalendario = async () => {
-    if (!confirm('¿Generar el calendario de la próxima temporada? La temporada anterior se conservará como histórico.')) return;
+    if (!confirm(
+      '¿Generar el calendario de la próxima temporada?\n\n' +
+      '✅ Los partidos de la temporada anterior quedan guardados permanentemente y serán consultables desde el selector de temporada en Calendario y Ligas.\n\n' +
+      '🔄 La clasificación en vivo (puntos, victorias, derrotas) se reinicia a cero para la nueva temporada.\n\n' +
+      '⚠️ No se puede deshacer.'
+    )) return;
     
     setIsGenerating(true);
     setProgress(0);
