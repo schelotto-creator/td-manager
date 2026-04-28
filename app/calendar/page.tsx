@@ -95,12 +95,6 @@ const sortStandings = (teams: TeamStanding[]) =>
     if (lossesDiff !== 0) return lossesDiff;
     return String(a.nombre || '').localeCompare(String(b.nombre || ''));
   });
-const dedupeMatches = (matches: DbMatchRow[]) =>
-  Array.from(new Map(matches.map((match) => [match.id, match])).values()).sort((a, b) => {
-    const roundDiff = Number(a.jornada || 0) - Number(b.jornada || 0);
-    if (roundDiff !== 0) return roundDiff;
-    return Number(a.id || 0) - Number(b.id || 0);
-  });
 const buildBracketPairings = (teams: TeamStanding[], startSeed: number): BracketPairing[] => {
   if (teams.length < 4) return [];
 
@@ -400,30 +394,18 @@ export default function CalendarPage() {
     }
 
     const activeSeasonNumber = await fetchActiveSeasonNumber();
-    const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
-      await Promise.all([
-        supabase
-          .from('matches')
-          .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
-          .eq('season_number', activeSeasonNumber)
-          .in('home_team_id', teamIds),
-        supabase
-          .from('matches')
-          .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
-          .eq('season_number', activeSeasonNumber)
-          .in('away_team_id', teamIds)
-      ]);
+    const { data: matchesData, error: matchesError } = await supabase
+      .from('matches')
+      .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
+      .eq('season_number', activeSeasonNumber)
+      .or(`home_team_id.in.(${teamIds.join(',')}),away_team_id.in.(${teamIds.join(',')})`);
 
-    const matchesError = homeMatchesError || awayMatchesError;
     if (matchesError) {
       throw matchesError;
     }
 
     const teamIdSet = new Set(teamIds);
-    const allMatches = dedupeMatches([
-      ...(((homeMatches || []) as DbMatchRow[]) || []),
-      ...(((awayMatches || []) as DbMatchRow[]) || [])
-    ]).filter(
+    const allMatches = ((matchesData || []) as DbMatchRow[]).filter(
       (match) =>
         teamIdSet.has(String(match.home_team_id)) &&
         teamIdSet.has(String(match.away_team_id))
