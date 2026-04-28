@@ -100,8 +100,6 @@ const sortMatches = (matches: CompetitionMatchRow[]) =>
     return Number(a.id || 0) - Number(b.id || 0);
   });
 
-const dedupeMatches = (matches: CompetitionMatchRow[]) =>
-  sortMatches(Array.from(new Map(matches.map((match) => [match.id, match])).values()));
 
 const fetchActiveSeasonNumber = async () => {
   const { data, error } = await supabase
@@ -519,7 +517,7 @@ export default function LeaguesExplorer() {
     async (grupoId: number) => {
       setLoadError(null);
 
-      const { data: teams, error } = await supabase.from('clubes').select('*').eq('grupo_id', grupoId);
+      const { data: teams, error } = await supabase.from('clubes').select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, pj, v, d, pts').eq('grupo_id', grupoId);
 
       if (error) {
         console.warn('No se pudo cargar la clasificación del grupo.', error);
@@ -543,21 +541,12 @@ export default function LeaguesExplorer() {
       );
 
       const activeSeasonNumber = await fetchActiveSeasonNumber();
-      const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
-        await Promise.all([
-          supabase
-            .from('matches')
-            .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
-            .eq('season_number', activeSeasonNumber)
-            .in('home_team_id', teamIds),
-          supabase
-            .from('matches')
-            .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
-            .eq('season_number', activeSeasonNumber)
-            .in('away_team_id', teamIds)
-        ]);
+      const { data: matchesData, error: matchesError } = await supabase
+        .from('matches')
+        .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
+        .eq('season_number', activeSeasonNumber)
+        .or(`home_team_id.in.(${teamIds.join(',')}),away_team_id.in.(${teamIds.join(',')})`);
 
-      const matchesError = homeMatchesError || awayMatchesError;
       if (matchesError) {
         console.warn('No se pudieron cargar los partidos del grupo.', matchesError);
         setLoadError(`No se pudieron recalcular standings (${toErrorText(matchesError).slice(0, 160)}).`);
@@ -566,10 +555,7 @@ export default function LeaguesExplorer() {
         return;
       }
 
-      const mergedMatches = dedupeMatches([
-        ...(((homeMatches || []) as CompetitionMatchRow[]) || []),
-        ...(((awayMatches || []) as CompetitionMatchRow[]) || [])
-      ]);
+      const mergedMatches = sortMatches((matchesData || []) as CompetitionMatchRow[]);
 
       const regularMatches = mergedMatches.filter((match) => {
         const phase = normalizePhase(match.fase);
@@ -640,7 +626,7 @@ export default function LeaguesExplorer() {
       if (extraTeamIds.length > 0) {
         const { data: extraTeams, error: extraTeamsError } = await supabase
           .from('clubes')
-          .select('*')
+          .select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, pj, v, d, pts')
           .in('id', extraTeamIds);
 
         if (extraTeamsError) {
