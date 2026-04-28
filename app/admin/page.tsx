@@ -251,7 +251,6 @@ export default function AdminDashboard() {
             setIsAuthorized(true);
             loadStats();
             loadUsers();
-            loadPendingDraftClubs();
             loadEconomyRules();
             loadSimulatorSettings();
             loadPositionOverallConfig();
@@ -262,6 +261,11 @@ export default function AdminDashboard() {
     };
     verifyAdmin();
   }, [router]);
+
+  useEffect(() => {
+    if (!isAuthorized) return;
+    loadPendingDraftClubs();
+  }, [isAuthorized]);
 
   const addLog = (msg: string) => {
     setLogs(prev => [`[${new Date().toLocaleTimeString()}] ${msg}`, ...prev]);
