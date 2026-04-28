@@ -340,6 +340,7 @@ export default function AdminDashboard() {
       .from('clubes')
       .select('id, nombre')
       .eq('status', CLUB_STATUS.SEASON_DRAFT);
+    console.log('[PendingDraft]', { data, error });
     if (error) {
       console.error('Error cargando drafts pendientes:', error);
     } else {
@@ -1340,7 +1341,7 @@ export default function AdminDashboard() {
       {activeSection === 'operations' && (
         <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-12 gap-8">
           <div className="xl:col-span-8 space-y-6">
-            <div className={`border rounded-3xl p-6 shadow-xl ${pendingDraftClubs.length > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-slate-900 border-white/5'}`}>
+            <div className={`border rounded-3xl p-6 shadow-xl ${pendingDraftClubs.length > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-slate-900 border-slate-700'}`}>
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-3">
                   <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${pendingDraftClubs.length > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500'}`}>
