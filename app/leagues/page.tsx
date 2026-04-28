@@ -459,6 +459,9 @@ export default function LeaguesExplorer() {
   const [myClubId, setMyClubId] = useState<TeamId | null>(null);
   const [myLeagueId, setMyLeagueId] = useState<number | null>(null);
   const [myGroupId, setMyGroupId] = useState<number | null>(null);
+
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
   const [activeTab, setActiveTab] = useState<PlayoffTab>('standings');
   const [activatingBracketId, setActivatingBracketId] = useState<string | null>(null);
 
@@ -514,7 +517,7 @@ export default function LeaguesExplorer() {
   }, []);
 
   const loadStandings = useCallback(
-    async (grupoId: number) => {
+    async (grupoId: number, seasonNumber?: number) => {
       setLoadError(null);
 
       const { data: teams, error } = await supabase.from('clubes').select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, pj, v, d, pts').eq('grupo_id', grupoId);
@@ -540,7 +543,7 @@ export default function LeaguesExplorer() {
         teamIds.map((id) => [id, { pj: 0, v: 0, d: 0, pts: 0 }])
       );
 
-      const activeSeasonNumber = await fetchActiveSeasonNumber();
+      const activeSeasonNumber = seasonNumber ?? await fetchActiveSeasonNumber();
       const { data: matchesData, error: matchesError } = await supabase
         .from('matches')
         .select('id,jornada,fase,season_number,home_team_id,away_team_id,home_score,away_score,played')
@@ -667,16 +670,22 @@ export default function LeaguesExplorer() {
       } = await supabase.auth.getUser();
       if (!user) return;
 
-      const [{ data: myClub }, { data: ligas }, { data: grupos }] = await Promise.all([
+      const [{ data: myClub }, { data: ligas }, { data: grupos }, { data: seasonData }] = await Promise.all([
         supabase.from('clubes').select('id, grupo_id, league_id').eq('owner_id', user.id).maybeSingle(),
         supabase.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
-        supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true })
+        supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
+        supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(1)
       ]);
 
       const leaguesData = (ligas || []) as LigaRow[];
       const groupsData = (grupos || []) as GrupoRow[];
       setLeagues(leaguesData);
       setGroups(groupsData);
+
+      const latestSeason = getLatestSeasonNumber((seasonData || []) as Array<{ season_number?: number | null }>);
+      const seasons = Array.from({ length: latestSeason }, (_, i) => latestSeason - i);
+      setAvailableSeasons(seasons);
+      setSelectedSeasonNumber(latestSeason);
 
       if (!myClub) {
         setStandings([]);
@@ -699,7 +708,7 @@ export default function LeaguesExplorer() {
       setSelectedGroupId(fallbackGroupId);
 
       if (fallbackGroupId) {
-        await loadStandings(fallbackGroupId);
+        await loadStandings(fallbackGroupId, latestSeason);
       } else {
         setStandings([]);
         setCompetitionState(null);
@@ -785,13 +794,13 @@ export default function LeaguesExplorer() {
   }, [selectedLeagueId, selectedGroupId, groupOptions]);
 
   useEffect(() => {
-    if (!selectedGroupId) {
+    if (!selectedGroupId || selectedSeasonNumber === null) {
       setStandings([]);
       setCompetitionState(null);
       return;
     }
-    void loadStandings(selectedGroupId);
-  }, [selectedGroupId, loadStandings]);
+    void loadStandings(selectedGroupId, selectedSeasonNumber);
+  }, [selectedGroupId, selectedSeasonNumber, loadStandings]);
 
   const regularPlayedCount = competitionState?.regularPlayedCount || 0;
   const regularTotalCount = competitionState?.regularTotalCount || 0;
@@ -1028,6 +1037,26 @@ export default function LeaguesExplorer() {
                 <Filter size={14} />
                 <p className="text-[10px] font-black uppercase tracking-widest">Explorar ligas</p>
               </div>
+              {availableSeasons.length > 1 && (
+                <div className="space-y-2">
+                  <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Temporada</label>
+                  <div className="flex gap-1 flex-wrap">
+                    {availableSeasons.map((s) => (
+                      <button
+                        key={s}
+                        onClick={() => setSelectedSeasonNumber(s)}
+                        className={`px-3 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${
+                          selectedSeasonNumber === s
+                            ? 'bg-cyan-500 text-slate-950'
+                            : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                        }`}
+                      >
+                        T{s}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest">Liga</label>
                 <select
