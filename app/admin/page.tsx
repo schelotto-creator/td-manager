@@ -1065,8 +1065,15 @@ export default function AdminDashboard() {
         addLog(`Temporada detectada: ${activeSeasonNumber}. Nuevo calendario: temporada ${nextSeasonNumber}.`);
 
         // 1. Conservamos partidos históricos y reseteamos solo la clasificación viva.
-        await supabase.from('clubes').update({ pj: 0, v: 0, d: 0, pts: 0 }).neq('id', 0);
-        addLog("Clasificaciones reiniciadas; los calendarios anteriores se conservan.");
+        const { error: resetError } = await supabase.from('clubes').update({ pj: 0, v: 0, d: 0, pts: 0 }).neq('id', 0);
+        if (resetError) {
+          const msg = resetError.message?.toLowerCase() ?? '';
+          const isMissingCols = ['pj', 'v', 'd', 'pts'].some(col => msg.includes(`column clubes.${col}`) || (msg.includes('clubes') && msg.includes(`'${col}' column`)));
+          if (!isMissingCols) throw resetError;
+          addLog('Columnas de clasificación no disponibles, se omite el reset (se actualizarán al simular partidos).');
+        } else {
+          addLog("Clasificaciones reiniciadas; los calendarios anteriores se conservan.");
+        }
 
         // 2. Extraemos todos los grupos y clubes
         const { data: grupos } = await supabase.from('grupos_liga').select('id');
@@ -1080,7 +1087,10 @@ export default function AdminDashboard() {
         // 3. Generamos los cruces por cada grupo
         for (const grupo of grupos) {
             const equipos = clubes.filter(c => c.grupo_id === grupo.id);
-            if (equipos.length !== 8) continue; // Si un grupo no tiene 8, se lo salta por seguridad
+            if (equipos.length !== 8) {
+                addLog(`⚠️ Grupo ${grupo.id} omitido: tiene ${equipos.length} equipos (se necesitan 8).`);
+                continue;
+            }
 
             const teamIds = equipos.map(e => e.id);
             const numEquipos = teamIds.length;
@@ -1126,7 +1136,11 @@ export default function AdminDashboard() {
             setProgress(Math.round((gruposProcesados / grupos.length) * 100));
         }
 
-        addLog(`Cálculo terminado: ${todosLosPartidos.length} partidos oficiales listos.`);
+        addLog(`Cálculo terminado: ${todosLosPartidos.length} partidos oficiales listos (${gruposProcesados} de ${grupos.length} grupos con 8 equipos).`);
+        if (todosLosPartidos.length === 0) {
+          addLog(`❌ No se generaron partidos. Revisa que todos los grupos tengan exactamente 8 equipos (grupos con distinto número fueron omitidos).`);
+          return;
+        }
         addLog(`Temporada ${nextSeasonNumber}: ida/vuelta programada sin tocar el histórico.`);
         addLog(`Subiendo al servidor en bloques de 500 para evitar saturación...`);
 
