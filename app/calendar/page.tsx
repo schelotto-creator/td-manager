@@ -5,7 +5,7 @@ import { supabase } from '@/lib/supabase';
 import { CalendarDays, ChevronLeft, ChevronRight, Activity, Trophy, Play, Shield, Filter, RotateCcw } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { getLatestSeasonNumber } from '@/lib/match-seasons';
+import { getLatestSeasonNumber, computeMatchDateFromJornada } from '@/lib/match-seasons';
 
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
 type LigaRow = { id: number; nombre: string; nivel?: number; };
@@ -114,16 +114,6 @@ const buildBracketPairings = (teams: TeamStanding[], startSeed: number): Bracket
       away: teams[2]
     }
   ];
-};
-const fetchActiveSeasonNumber = async () => {
-  const { data, error } = await supabase
-    .from('matches')
-    .select('season_number')
-    .order('season_number', { ascending: false })
-    .limit(1);
-
-  if (error) throw error;
-  return getLatestSeasonNumber((data || []) as Array<{ season_number?: number | null }>);
 };
 const buildProjectedPlayoffMatches = (
   context: GroupCalendarContext,
@@ -238,6 +228,9 @@ export default function CalendarPage() {
   const [myClubId, setMyClubId] = useState<TeamId | null>(null);
   const [myLeagueId, setMyLeagueId] = useState<number | null>(null);
   const [myGroupId, setMyGroupId] = useState<number | null>(null);
+
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
+  const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
   const lastAutomationPulseAtRef = useRef(0);
   const automationPulseInFlightRef = useRef<Promise<boolean> | null>(null);
 
@@ -336,7 +329,7 @@ export default function CalendarPage() {
     }
   }, []);
 
-  const fetchGroupCalendarContext = useCallback(async (grupoId: number): Promise<GroupCalendarContext> => {
+  const fetchGroupCalendarContext = useCallback(async (grupoId: number, seasonNumber: number): Promise<GroupCalendarContext> => {
     const { data: teamsData, error: teamsError } = await supabase
       .from('clubes')
       .select('id, nombre, color_primario, escudo_forma, escudo_url')
@@ -393,11 +386,10 @@ export default function CalendarPage() {
       };
     }
 
-    const activeSeasonNumber = await fetchActiveSeasonNumber();
     const { data: matchesData, error: matchesError } = await supabase
       .from('matches')
       .select('id, jornada, fase, season_number, home_team_id, away_team_id, home_score, away_score, played, match_date')
-      .eq('season_number', activeSeasonNumber)
+      .eq('season_number', seasonNumber)
       .or(`home_team_id.in.(${teamIds.join(',')}),away_team_id.in.(${teamIds.join(',')})`);
 
     if (matchesError) {
@@ -507,7 +499,7 @@ export default function CalendarPage() {
         return;
       }
 
-      const refreshedContext = await fetchGroupCalendarContext(groupId);
+      const refreshedContext = await fetchGroupCalendarContext(groupId, selectedSeasonNumber ?? 1);
       const officialMatch = refreshedContext.allMatches.find(
         (match) =>
           Number(match.jornada || 0) === round &&
@@ -527,11 +519,11 @@ export default function CalendarPage() {
     } finally {
       setActivatingMatchEntryId(null);
     }
-  }, [ensureGroupPlayoffs, fetchGroupCalendarContext, myClubId, router]);
+  }, [ensureGroupPlayoffs, fetchGroupCalendarContext, myClubId, router, selectedSeasonNumber]);
 
-  const getRoundStateForGroup = useCallback(async (grupoId: number) => {
+  const getRoundStateForGroup = useCallback(async (grupoId: number, seasonNumber: number) => {
     try {
-      const context = await fetchGroupCalendarContext(grupoId);
+      const context = await fetchGroupCalendarContext(grupoId, seasonNumber);
 
       if (context.allMatches.length === 0) {
         return { currentRound: 1, maxRound: context.plannedMaxRound };
@@ -570,18 +562,19 @@ export default function CalendarPage() {
     }
   }, [fetchGroupCalendarContext]);
 
-  const loadMatches = useCallback(async (grupoId: number, j: number, opts?: { silent?: boolean }) => {
+  const loadMatches = useCallback(async (grupoId: number, j: number, opts?: { silent?: boolean }, seasonNumber?: number) => {
     const silent = Boolean(opts?.silent);
+    const season = seasonNumber ?? 1;
     if (!silent) setLoading(true);
     setLoadError(null);
     try {
       if (!silent) {
         void triggerAutomationPulse().then((ran) => {
-          if (ran) void loadMatches(grupoId, j, { silent: true });
+          if (ran) void loadMatches(grupoId, j, { silent: true }, season);
         });
       }
 
-      let context = await fetchGroupCalendarContext(grupoId);
+      let context = await fetchGroupCalendarContext(grupoId, season);
       if (context.standings.length === 0) {
         setMatches([]);
         return;
@@ -596,7 +589,7 @@ export default function CalendarPage() {
       if (isEmptyPlayoffSlot) {
         const ensured = await ensureGroupPlayoffs(grupoId);
         if (ensured.created || ensured.viewerMatchId) {
-          context = await fetchGroupCalendarContext(grupoId);
+          context = await fetchGroupCalendarContext(grupoId, season);
           rawMatches = context.allMatches.filter((match) => Number(match.jornada || 0) === j);
         }
       }
@@ -641,16 +634,23 @@ export default function CalendarPage() {
         { data: myClub },
         { data: ligas },
         { data: grupos },
+        { data: seasonData },
       ] = await Promise.all([
         supabase.from('clubes').select('id, league_id, grupo_id').eq('owner_id', user.id).maybeSingle(),
         supabase.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
         supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
+        supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(1),
       ]);
 
       const leaguesData = (ligas || []) as LigaRow[];
       const groupsData = (grupos || []) as GrupoRow[];
       setLeagues(leaguesData);
       setGroups(groupsData);
+
+      const latestSeason = getLatestSeasonNumber((seasonData || []) as Array<{ season_number?: number | null }>);
+      const seasons = Array.from({ length: latestSeason }, (_, i) => latestSeason - i);
+      setAvailableSeasons(seasons);
+      setSelectedSeasonNumber(latestSeason);
 
       if (!myClub) return;
 
@@ -671,10 +671,10 @@ export default function CalendarPage() {
       setSelectedGroupId(fallbackGroupId);
 
       if (fallbackGroupId) {
-        const roundState = await getRoundStateForGroup(fallbackGroupId);
+        const roundState = await getRoundStateForGroup(fallbackGroupId, latestSeason);
         setJornada(roundState.currentRound);
         setMaxRound(roundState.maxRound);
-        await loadMatches(fallbackGroupId, roundState.currentRound);
+        await loadMatches(fallbackGroupId, roundState.currentRound, undefined, latestSeason);
       }
     } catch (e) {
       console.warn('Error inicializando calendario:', e);
@@ -693,36 +693,39 @@ export default function CalendarPage() {
   }, [selectedLeagueId, selectedGroupId, groupOptions]);
 
   useEffect(() => {
-    if (!selectedGroupId) {
+    if (!selectedGroupId || selectedSeasonNumber === null) {
       setMatches([]);
       return;
     }
     let isMounted = true;
     (async () => {
       await triggerAutomationPulse();
-      const roundState = await getRoundStateForGroup(selectedGroupId);
+      const roundState = await getRoundStateForGroup(selectedGroupId, selectedSeasonNumber);
       if (isMounted) {
-        setJornada(roundState.currentRound);
+        const isLatest = availableSeasons.length === 0 || selectedSeasonNumber === availableSeasons[0];
+        setJornada(isLatest ? roundState.currentRound : 1);
         setMaxRound(roundState.maxRound);
       }
     })();
     return () => { isMounted = false; };
-  }, [selectedGroupId, getRoundStateForGroup, triggerAutomationPulse]);
+  }, [selectedGroupId, selectedSeasonNumber, availableSeasons, getRoundStateForGroup, triggerAutomationPulse]);
 
   useEffect(() => {
-    if (!selectedGroupId) return;
-    void loadMatches(selectedGroupId, jornada);
-  }, [selectedGroupId, jornada, loadMatches]);
+    if (!selectedGroupId || selectedSeasonNumber === null) return;
+    void loadMatches(selectedGroupId, jornada, undefined, selectedSeasonNumber);
+  }, [selectedGroupId, jornada, selectedSeasonNumber, loadMatches]);
 
   useEffect(() => {
-    if (!selectedGroupId) return;
+    if (!selectedGroupId || selectedSeasonNumber === null) return;
+    const isLatest = availableSeasons.length === 0 || selectedSeasonNumber === availableSeasons[0];
+    if (!isLatest) return;
 
     const interval = window.setInterval(() => {
-      void loadMatches(selectedGroupId, jornada, { silent: true });
+      void loadMatches(selectedGroupId, jornada, { silent: true }, selectedSeasonNumber);
     }, 60_000);
 
     return () => window.clearInterval(interval);
-  }, [selectedGroupId, jornada, loadMatches]);
+  }, [selectedGroupId, jornada, selectedSeasonNumber, availableSeasons, loadMatches]);
 
   const nextRound = () => setJornada(p => Math.min(maxRound, p + 1));
   const prevRound = () => setJornada(p => Math.max(1, p - 1));
@@ -731,8 +734,10 @@ export default function CalendarPage() {
     if (!myLeagueId || !myGroupId) return;
     setSelectedLeagueId(myLeagueId);
     setSelectedGroupId(myGroupId);
+    const latestSeason = availableSeasons[0] ?? 1;
+    setSelectedSeasonNumber(latestSeason);
     await triggerAutomationPulse();
-    const roundState = await getRoundStateForGroup(myGroupId);
+    const roundState = await getRoundStateForGroup(myGroupId, latestSeason);
     setJornada(roundState.currentRound);
     setMaxRound(roundState.maxRound);
   };
@@ -757,13 +762,8 @@ export default function CalendarPage() {
   }, [matches]);
 
   const getJornadaDateStr = (jRound: number) => {
-    const baseDate = new Date(2026, 2, 4, 18, 30);
-    const weekOffset = Math.floor((jRound - 1) / 2);
-    const isSaturday = jRound % 2 === 0;
-    const daysToAdd = (weekOffset * 7) + (isSaturday ? 3 : 0);
-    baseDate.setDate(baseDate.getDate() + daysToAdd);
-    if (isSaturday) baseDate.setHours(12, 30);
-
+    const date = computeMatchDateFromJornada(jRound, selectedSeasonNumber ?? 1);
+    if (!date) return '';
     return new Intl.DateTimeFormat('es-ES', {
       weekday: 'short',
       day: '2-digit',
@@ -771,7 +771,7 @@ export default function CalendarPage() {
       year: '2-digit',
       hour: '2-digit',
       minute: '2-digit'
-    }).format(baseDate) + ' CET';
+    }).format(date) + ' CET';
   };
 
   const formatKickoff = (match: CalendarMatchRow) => {
@@ -845,6 +845,24 @@ export default function CalendarPage() {
                   Volver a mi grupo
                 </button>
               </div>
+              {availableSeasons.length > 1 && (
+                <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <span className="text-[9px] text-slate-500 font-black uppercase tracking-widest">Temporada:</span>
+                  {availableSeasons.map((s) => (
+                    <button
+                      key={s}
+                      onClick={() => setSelectedSeasonNumber(s)}
+                      className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors ${
+                        selectedSeasonNumber === s
+                          ? 'bg-orange-500 text-white'
+                          : 'bg-slate-800 text-slate-400 hover:text-white hover:bg-slate-700'
+                      }`}
+                    >
+                      T{s}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
             <div className="flex items-center justify-between w-full lg:w-[420px] bg-slate-900 border border-white/10 rounded-[2rem] p-2 shadow-2xl">
