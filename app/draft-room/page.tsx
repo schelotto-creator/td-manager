@@ -473,6 +473,16 @@ export default function DraftRoom() {
               }
 
               await supabase.from('clubes').update({ status: CLUB_STATUS.COMPETING }).eq('id', team.id);
+
+              const { data: { user: currentUser } } = await supabase.auth.getUser();
+              const [{ data: managerRow }, { count: remainingDraft }] = await Promise.all([
+                supabase.from('managers').select('is_admin').eq('owner_id', currentUser?.id ?? '').maybeSingle(),
+                supabase.from('clubes').select('id', { count: 'exact', head: true }).eq('status', CLUB_STATUS.SEASON_DRAFT)
+              ]);
+              if (managerRow?.is_admin && (remainingDraft ?? 1) === 0) {
+                router.push('/admin');
+                return;
+              }
           } else {
               const chosenRookies = rookies.filter(r => selectedIds.includes(r.temp_id)).map(r => {
                   const { temp_id, db_id, ...dbPlayer } = r;
