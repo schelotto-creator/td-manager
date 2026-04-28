@@ -339,9 +339,12 @@ export default function AdminDashboard() {
     const { data, error } = await supabase
       .from('clubes')
       .select('id, nombre')
-      .eq('status', CLUB_STATUS.SEASON_DRAFT)
-      .eq('is_bot', false);
-    if (!error) setPendingDraftClubs((data || []) as { id: number; nombre: string }[]);
+      .eq('status', CLUB_STATUS.SEASON_DRAFT);
+    if (error) {
+      console.error('Error cargando drafts pendientes:', error);
+    } else {
+      setPendingDraftClubs((data || []) as { id: number; nombre: string }[]);
+    }
   };
 
   const forceCompleteDraft = async (clubId: number, clubName: string) => {
@@ -1337,22 +1340,26 @@ export default function AdminDashboard() {
       {activeSection === 'operations' && (
         <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-12 gap-8">
           <div className="xl:col-span-8 space-y-6">
-            {pendingDraftClubs.length > 0 && (
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-3xl p-6 shadow-xl">
-                <div className="flex items-center justify-between gap-3 mb-4">
-                  <div className="flex items-center gap-3">
-                    <div className="w-10 h-10 bg-amber-500/20 text-amber-400 rounded-xl flex items-center justify-center">
-                      <GraduationCap size={20} />
-                    </div>
-                    <div>
-                      <h2 className="font-black uppercase text-amber-300 tracking-wide">Drafts Pendientes</h2>
-                      <p className="text-[10px] text-amber-500/80 uppercase tracking-widest">{pendingDraftClubs.length} equipo{pendingDraftClubs.length > 1 ? 's' : ''} bloqueando el inicio de temporada</p>
-                    </div>
+            <div className={`border rounded-3xl p-6 shadow-xl ${pendingDraftClubs.length > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-slate-900 border-white/5'}`}>
+              <div className="flex items-center justify-between gap-3 mb-4">
+                <div className="flex items-center gap-3">
+                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${pendingDraftClubs.length > 0 ? 'bg-amber-500/20 text-amber-400' : 'bg-slate-800 text-slate-500'}`}>
+                    <GraduationCap size={20} />
                   </div>
-                  <button onClick={loadPendingDraftClubs} className="text-[10px] text-amber-500 hover:text-amber-300 flex items-center gap-1 uppercase tracking-widest font-black">
-                    <RefreshCcw size={12} /> Recargar
-                  </button>
+                  <div>
+                    <h2 className={`font-black uppercase tracking-wide ${pendingDraftClubs.length > 0 ? 'text-amber-300' : 'text-white'}`}>Drafts Pendientes</h2>
+                    <p className={`text-[10px] uppercase tracking-widest ${pendingDraftClubs.length > 0 ? 'text-amber-500/80' : 'text-slate-500'}`}>
+                      {pendingDraftClubs.length > 0
+                        ? `${pendingDraftClubs.length} equipo${pendingDraftClubs.length > 1 ? 's' : ''} bloqueando el inicio de temporada`
+                        : 'Todos los equipos han completado su draft'}
+                    </p>
+                  </div>
                 </div>
+                <button onClick={loadPendingDraftClubs} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 uppercase tracking-widest font-black">
+                  <RefreshCcw size={12} /> Recargar
+                </button>
+              </div>
+              {pendingDraftClubs.length > 0 && (
                 <div className="space-y-2">
                   {pendingDraftClubs.map((club) => (
                     <div key={club.id} className="flex items-center justify-between gap-3 bg-slate-900/60 border border-white/5 rounded-xl px-4 py-3">
@@ -1368,8 +1375,8 @@ export default function AdminDashboard() {
                     </div>
                   ))}
                 </div>
-              </div>
-            )}
+              )}
+            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
               <div className="bg-slate-900 border border-white/5 p-6 rounded-3xl shadow-xl">
