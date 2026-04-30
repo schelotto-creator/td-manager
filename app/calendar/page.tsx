@@ -397,10 +397,19 @@ export default function CalendarPage() {
     }
 
     const teamIdSet = new Set(teamIds);
+    // Expand to include teams that played against current group members this season
+    // (handles group composition changes between when calendar was created and now)
+    const extendedTeamIdSet = new Set(teamIds);
+    ((matchesData || []) as DbMatchRow[]).forEach((match) => {
+      const homeId = String(match.home_team_id);
+      const awayId = String(match.away_team_id);
+      if (teamIdSet.has(homeId)) extendedTeamIdSet.add(awayId);
+      if (teamIdSet.has(awayId)) extendedTeamIdSet.add(homeId);
+    });
     const allMatches = ((matchesData || []) as DbMatchRow[]).filter(
       (match) =>
-        teamIdSet.has(String(match.home_team_id)) &&
-        teamIdSet.has(String(match.away_team_id))
+        extendedTeamIdSet.has(String(match.home_team_id)) &&
+        extendedTeamIdSet.has(String(match.away_team_id))
     );
 
     const regularMatches = allMatches.filter((match) => normalizePhase(match.fase) === 'REGULAR');
