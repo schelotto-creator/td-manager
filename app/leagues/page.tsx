@@ -520,7 +520,7 @@ export default function LeaguesExplorer() {
     async (grupoId: number, seasonNumber?: number) => {
       setLoadError(null);
 
-      const { data: teams, error } = await supabase.from('clubes').select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, pj, v, d, pts').eq('grupo_id', grupoId);
+      const { data: teams, error } = await supabase.from('clubes').select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, v, d, pts').eq('grupo_id', grupoId);
 
       if (error) {
         console.warn('No se pudo cargar la clasificación del grupo.', error);
@@ -629,7 +629,7 @@ export default function LeaguesExplorer() {
       if (extraTeamIds.length > 0) {
         const { data: extraTeams, error: extraTeamsError } = await supabase
           .from('clubes')
-          .select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, pj, v, d, pts')
+          .select('id, nombre, is_bot, color_primario, escudo_forma, escudo_url, v, d, pts')
           .in('id', extraTeamIds);
 
         if (extraTeamsError) {
