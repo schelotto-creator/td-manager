@@ -397,14 +397,24 @@ export default function CalendarPage() {
     }
 
     const teamIdSet = new Set(teamIds);
-    // Expand to include teams that played against current group members this season
-    // (handles group composition changes between when calendar was created and now)
-    const extendedTeamIdSet = new Set(teamIds);
+    // Count how many current-group members each external team played against in regular season.
+    // Teams with 2+ such matches are former group members (promoted/relegated after calendar was
+    // created). Teams from other groups have 0 matches against current members so are excluded.
+    const externalRegularMatchCount = new Map<string, number>();
     ((matchesData || []) as DbMatchRow[]).forEach((match) => {
+      if (normalizePhase(match.fase) !== 'REGULAR') return;
       const homeId = String(match.home_team_id);
       const awayId = String(match.away_team_id);
-      if (teamIdSet.has(homeId)) extendedTeamIdSet.add(awayId);
-      if (teamIdSet.has(awayId)) extendedTeamIdSet.add(homeId);
+      if (teamIdSet.has(homeId) && !teamIdSet.has(awayId)) {
+        externalRegularMatchCount.set(awayId, (externalRegularMatchCount.get(awayId) || 0) + 1);
+      }
+      if (teamIdSet.has(awayId) && !teamIdSet.has(homeId)) {
+        externalRegularMatchCount.set(homeId, (externalRegularMatchCount.get(homeId) || 0) + 1);
+      }
+    });
+    const extendedTeamIdSet = new Set(teamIds);
+    externalRegularMatchCount.forEach((count, teamId) => {
+      if (count >= 2) extendedTeamIdSet.add(teamId);
     });
     const allMatches = ((matchesData || []) as DbMatchRow[]).filter(
       (match) =>
