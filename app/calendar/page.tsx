@@ -414,7 +414,7 @@ export default function CalendarPage() {
     });
     const extendedTeamIdSet = new Set(teamIds);
     externalRegularMatchCount.forEach((count, teamId) => {
-      if (count >= 2) extendedTeamIdSet.add(teamId);
+      if (count >= 1) extendedTeamIdSet.add(teamId);
     });
     const allMatches = ((matchesData || []) as DbMatchRow[]).filter(
       (match) =>
