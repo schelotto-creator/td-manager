@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight } from 'lucide-react';
+import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info } from 'lucide-react';
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
 
@@ -34,6 +34,15 @@ type NextMatch = {
   isHome: boolean;
 };
 
+type InboxItem = {
+  id: string;
+  type: 'win' | 'loss' | 'warning' | 'info';
+  title: string;
+  body: string;
+  href?: string;
+  urgent?: boolean;
+};
+
 function EscudoSVG({ forma, color, className }: { forma?: string | null; color?: string | null; className?: string }) {
   const fill = color || '#06b6d4';
 
@@ -58,6 +67,7 @@ export default function Dashboard() {
   const [club, setClub] = useState<Club | null>(null);
   const [leagueName, setLeagueName] = useState<string>('Liga en curso');
   const [nextMatch, setNextMatch] = useState<NextMatch | null>(null);
+  const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -108,6 +118,81 @@ export default function Dashboard() {
             isHome: next.home_team_id === clubData.id
           });
         }
+
+        // Build inbox items in parallel
+        const [lastMatchRes, playersRes] = await Promise.all([
+          supabase
+            .from('matches')
+            .select('id,jornada,season_number,home_team_id,away_team_id,home_score,away_score')
+            .eq('played', true)
+            .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
+            .order('season_number', { ascending: false })
+            .order('jornada', { ascending: false })
+            .limit(1),
+          supabase
+            .from('players')
+            .select('id,name,stamina,entrenos_semanales')
+            .eq('team_id', String(clubData.id))
+        ]);
+
+        const inbox: InboxItem[] = [];
+
+        const lastMatch = lastMatchRes.data?.[0];
+        if (lastMatch) {
+          const isHome = String(lastMatch.home_team_id) === String(clubData.id);
+          const myScore = isHome ? (lastMatch.home_score ?? 0) : (lastMatch.away_score ?? 0);
+          const rivalScore = isHome ? (lastMatch.away_score ?? 0) : (lastMatch.home_score ?? 0);
+          const rivalId = isHome ? lastMatch.away_team_id : lastMatch.home_team_id;
+          const { data: rivalClub } = await supabase.from('clubes').select('nombre').eq('id', rivalId).maybeSingle();
+          const won = myScore > rivalScore;
+          inbox.push({
+            id: 'last_match',
+            type: won ? 'win' : 'loss',
+            title: won ? `Victoria en Jornada ${lastMatch.jornada}` : `Derrota en Jornada ${lastMatch.jornada}`,
+            body: `${myScore}–${rivalScore} ${won ? 'ante' : 'contra'} ${rivalClub?.nombre ?? 'Rival'}`,
+            href: `/match?matchId=${lastMatch.id}`
+          });
+        }
+
+        const players = playersRes.data ?? [];
+        const lowStamina = players.filter(p => (p.stamina ?? 100) < 30);
+        if (lowStamina.length > 0) {
+          const preview = lowStamina.slice(0, 2).map(p => p.name).join(', ');
+          const tail = lowStamina.length > 2 ? ` y ${lowStamina.length - 2} más` : '';
+          inbox.push({
+            id: 'stamina',
+            type: 'warning',
+            title: `${lowStamina.length} jugador${lowStamina.length > 1 ? 'es' : ''} agotado${lowStamina.length > 1 ? 's' : ''}`,
+            body: `${preview}${tail} necesitan fisioterapia`,
+            href: '/training',
+            urgent: true
+          });
+        }
+
+        const readyToTrain = players.filter(p => (p.entrenos_semanales ?? 0) === 0 && (p.stamina ?? 100) >= 25);
+        if (readyToTrain.length > 0) {
+          inbox.push({
+            id: 'training',
+            type: 'info',
+            title: `${readyToTrain.length} jugador${readyToTrain.length > 1 ? 'es' : ''} listo${readyToTrain.length > 1 ? 's' : ''} para entrenar`,
+            body: 'Tienes entrenamientos semanales disponibles',
+            href: '/training'
+          });
+        }
+
+        if ((clubData.presupuesto ?? 0) < 50000) {
+          const fmt = new Intl.NumberFormat('es-ES', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 });
+          inbox.push({
+            id: 'budget',
+            type: 'warning',
+            title: 'Presupuesto bajo',
+            body: `Solo ${fmt.format(clubData.presupuesto ?? 0)} en caja`,
+            href: '/finance',
+            urgent: (clubData.presupuesto ?? 0) < 20000
+          });
+        }
+
+        setInboxItems(inbox);
       } finally {
         setLoading(false);
       }
@@ -223,6 +308,41 @@ export default function Dashboard() {
             )}
           </div>
         </header>
+
+        {inboxItems.length > 0 && (
+          <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
+            <div className="flex items-center gap-3 mb-4">
+              <h2 className="text-white text-lg font-black tracking-tight">Bandeja de Entrada</h2>
+              <span className="bg-cyan-500 text-slate-950 text-[10px] font-black px-2 py-0.5 rounded-full leading-none">
+                {inboxItems.length}
+              </span>
+            </div>
+            <div className="flex flex-col gap-2">
+              {inboxItems.map(item => {
+                const typeStyles = {
+                  win:     { border: 'border-l-green-500',  icon: <TrendingUp size={15} className="text-green-400 shrink-0" />,    bg: '' },
+                  loss:    { border: 'border-l-red-500',    icon: <TrendingDown size={15} className="text-red-400 shrink-0" />,    bg: '' },
+                  warning: { border: item.urgent ? 'border-l-red-500' : 'border-l-orange-500', icon: <AlertTriangle size={15} className={item.urgent ? 'text-red-400 shrink-0' : 'text-orange-400 shrink-0'} />, bg: item.urgent ? 'bg-red-500/5' : '' },
+                  info:    { border: 'border-l-cyan-500',   icon: <Info size={15} className="text-cyan-400 shrink-0" />,           bg: '' },
+                };
+                const s = typeStyles[item.type];
+                const inner = (
+                  <div className={`flex items-center gap-3 border-l-2 ${s.border} ${s.bg} pl-3 pr-2 py-2 rounded-r-xl`}>
+                    {s.icon}
+                    <div className="flex-1 min-w-0">
+                      <p className="text-white text-xs font-bold leading-tight">{item.title}</p>
+                      <p className="text-slate-400 text-xs leading-tight mt-0.5 truncate">{item.body}</p>
+                    </div>
+                    {item.href && <ArrowRight size={13} className="text-slate-500 shrink-0" />}
+                  </div>
+                );
+                return item.href
+                  ? <Link key={item.id} href={item.href} className="hover:bg-slate-800/40 rounded-xl transition-colors">{inner}</Link>
+                  : <div key={item.id}>{inner}</div>;
+              })}
+            </div>
+          </section>
+        )}
 
         <section className="bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
           <div className="flex items-center justify-between mb-4">
