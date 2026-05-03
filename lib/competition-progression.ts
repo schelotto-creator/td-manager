@@ -9,7 +9,8 @@ import {
 import {
   computeMatchDateFromJornada,
   filterMatchesBySeason,
-  getLatestSeasonNumber
+  getLatestSeasonNumber,
+  normalizeSeasonNumber
 } from '@/lib/match-seasons';
 
 type TeamId = string;
@@ -648,11 +649,40 @@ const getLoserTeamId = (match: GroupMatchRow) => {
 export const maybeFinalizeSeasonRollover = async (
   supabaseAdmin: SupabaseClient
 ): Promise<SeasonRolloverResult> => {
+  // Two fast indexed pre-checks before loading the full dataset.
+  // The full matches query has no row limit guard, so if there are thousands of matches
+  // PostgREST's max-rows setting can silently truncate the result. Querying the latest
+  // season_number first and counting unplayed rows avoids that issue entirely.
+  const { data: latestSeasonRow } = await supabaseAdmin
+    .from('matches')
+    .select('season_number')
+    .order('season_number', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!latestSeasonRow) {
+    return { status: 'skipped', message: 'No hay temporada activa para cerrar.' };
+  }
+
+  const activeSeasonNumber = normalizeSeasonNumber(latestSeasonRow.season_number);
+
+  const { count: unplayedCount } = await supabaseAdmin
+    .from('matches')
+    .select('id', { count: 'exact', head: true })
+    .eq('season_number', activeSeasonNumber)
+    .eq('played', false);
+
+  if ((unplayedCount ?? 1) > 0) {
+    return { status: 'skipped', message: 'La temporada aún tiene partidos pendientes.' };
+  }
+
+  // Season is complete — load full data for rollover, filtered to the active season.
   const [{ data: matches, error: matchesError }, { data: leagues, error: leaguesError }, { data: groups, error: groupsError }, clubsResultWithStandings] =
     await Promise.all([
       supabaseAdmin
         .from('matches')
         .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
+        .eq('season_number', activeSeasonNumber)
         .order('id', { ascending: true }),
       supabaseAdmin.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
       supabaseAdmin.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
@@ -676,20 +706,11 @@ export const maybeFinalizeSeasonRollover = async (
     );
   }
 
-  const storedMatches = ((matches || []) as GroupMatchRow[]) || [];
-  const activeSeasonNumber = getLatestSeasonNumber(storedMatches);
-  const allMatches = filterMatchesBySeason(storedMatches, activeSeasonNumber);
+  const allMatches = ((matches || []) as GroupMatchRow[]);
   if (allMatches.length === 0) {
     return {
       status: 'skipped',
       message: 'No hay temporada activa para cerrar.'
-    };
-  }
-
-  if (allMatches.some((match) => !match.played)) {
-    return {
-      status: 'skipped',
-      message: 'La temporada aún tiene partidos pendientes.'
     };
   }
 
