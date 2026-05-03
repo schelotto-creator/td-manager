@@ -124,7 +124,7 @@ const DEFAULT_SCHEDULED_MATCH_PREP_MINUTES = 15;
 const MATCH_SELECT_FIELDS =
   'id,jornada,fase,season_number,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
 const LEGACY_MATCH_SELECT_FIELDS =
-  'id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play';
+  'id,jornada,fase,season_number,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play';
 
 const chunkArray = <T>(items: T[], size: number) => {
   if (size <= 0) return [items];
