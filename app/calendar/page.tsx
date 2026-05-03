@@ -233,6 +233,7 @@ export default function CalendarPage() {
   const [selectedSeasonNumber, setSelectedSeasonNumber] = useState<number | null>(null);
   const lastAutomationPulseAtRef = useRef(0);
   const automationPulseInFlightRef = useRef<Promise<boolean> | null>(null);
+  const contextCacheRef = useRef<{ key: string; ts: number; result: GroupCalendarContext } | null>(null);
 
   const triggerAutomationPulse = useCallback(async (force = false) => {
     const now = Date.now();
@@ -330,6 +331,15 @@ export default function CalendarPage() {
   }, []);
 
   const fetchGroupCalendarContext = useCallback(async (grupoId: number, seasonNumber: number): Promise<GroupCalendarContext> => {
+    const cacheKey = `${grupoId}:${seasonNumber}`;
+    if (contextCacheRef.current?.key === cacheKey && Date.now() - contextCacheRef.current.ts < 5_000) {
+      return contextCacheRef.current.result;
+    }
+    const saveCache = (result: GroupCalendarContext) => {
+      contextCacheRef.current = { key: cacheKey, ts: Date.now(), result };
+      return result;
+    };
+
     const { data: teamsData, error: teamsError } = await supabase
       .from('clubes')
       .select('id, nombre, color_primario, escudo_forma, escudo_url')
@@ -372,7 +382,7 @@ export default function CalendarPage() {
 
     const teamIds = baseTeams.map((team) => team.id);
     if (teamIds.length === 0) {
-      return {
+      return saveCache({
         allMatches: [],
         teamById,
         standings: [],
@@ -383,7 +393,7 @@ export default function CalendarPage() {
         playoffSemiRound: 15,
         playoffFinalRound: 16,
         hasPlayoffSlots: false
-      };
+      });
     }
 
     const { data: matchesData, error: matchesError } = await supabase
@@ -491,7 +501,7 @@ export default function CalendarPage() {
       ? Math.max(actualMaxRound, playoffFinalRound)
       : Math.max(actualMaxRound, regularMaxRound || 14);
 
-    return {
+    return saveCache({
       allMatches,
       teamById,
       standings,
@@ -502,7 +512,7 @@ export default function CalendarPage() {
       playoffSemiRound,
       playoffFinalRound,
       hasPlayoffSlots
-    };
+    });
   }, []);
 
   const activateProjectedMatch = useCallback(async (groupId: number, round: number, entryId: string) => {
@@ -677,7 +687,7 @@ export default function CalendarPage() {
       setMyLeagueId(myClub.league_id || null);
       setMyGroupId(myClub.grupo_id || null);
 
-      await triggerAutomationPulse(true);
+      void triggerAutomationPulse(true);
 
       const fallbackLeagueId = myClub.league_id || leaguesData[0]?.id || null;
       const fallbackGroupId =
