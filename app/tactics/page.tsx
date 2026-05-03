@@ -275,17 +275,32 @@ function TacticsBoardContent() {
     if (matchId) {
         const { data: match } = await supabase.from('matches').select('*').eq('id', matchId).single();
         const isHome = match.home_team_id === team.id;
-        const updateData = isHome ? { home_tactics: tacticsPayload } : { away_tactics: tacticsPayload };
-        await supabase.from('matches').update(updateData).eq('id', matchId);
+        const tacticsUpdate = isHome ? { home_tactics: tacticsPayload } : { away_tactics: tacticsPayload };
+        // Also invalidate any pre-computed simulation so the next pulse re-runs with the new lineup
+        const resetSimulation = !match.played ? {
+          simulated_home_score: null,
+          simulated_away_score: null,
+          simulated_play_by_play: null,
+          simulated_player_stats: null,
+        } : {};
+        await supabase.from('matches').update({ ...tacticsUpdate, ...resetSimulation }).eq('id', matchId);
         alert(`✅ Plan guardado contra ${rivalName}.`);
-        router.push('/calendar'); 
+        router.push('/calendar');
     } else {
         await supabase.from('clubes').update({
             tactic_offense: offense,
             tactic_defense: defense,
-            rotations: team.rotations 
+            rotations: team.rotations
         }).eq('id', team.id);
-        
+
+        // Invalidate pre-computed simulations for upcoming matches so they re-run with the updated default lineup
+        await supabase.from('matches').update({
+          simulated_home_score: null,
+          simulated_away_score: null,
+          simulated_play_by_play: null,
+          simulated_player_stats: null,
+        }).eq('played', false).or(`home_team_id.eq.${team.id},away_team_id.eq.${team.id}`);
+
         if (team.rotations['q1']) {
             await supabase.from('players').update({ lineup_pos: 'BENCH' }).eq('team_id', team.id);
             for (const [pos, playerId] of Object.entries(team.rotations['q1'])) {
