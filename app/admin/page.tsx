@@ -1199,6 +1199,31 @@ export default function AdminDashboard() {
     }
   };
 
+  const forzarSimulacion = async () => {
+    if (isGenerating) return;
+    setIsGenerating(true);
+    addLog('⚙️ Lanzando pulso de simulación...');
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('Sin sesión activa');
+      const res = await fetch('/api/automation/pulse', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ maxMatches: 300 })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error desconocido');
+      const s = data.scheduledMatches;
+      addLog(`✅ Pulso completado: ${s.finalized} finalizados, ${s.simulated} simulados, ${s.skipped} omitidos`);
+      if (s.errors?.length > 0) addLog(`⚠️ ${s.errors.length} errores: ${s.errors.map((e: any) => e.reason).join(', ')}`);
+    } catch (err: any) {
+      addLog(`❌ ERROR: ${err.message}`);
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   if (!isAuthorized) {
       return (
           <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-mono text-cyan-500">
@@ -1446,6 +1471,27 @@ export default function AdminDashboard() {
                 >
                   {isGenerating ? <Activity className="animate-spin" size={16} /> : <Trophy size={16} />}
                   {isGenerating ? 'Programando...' : 'Crear Calendario'}
+                </button>
+              </div>
+
+              <div className="bg-slate-900 border border-white/5 p-6 rounded-3xl shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-sky-500/10 text-sky-400 rounded-xl flex items-center justify-center">
+                    <Zap size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-black uppercase text-white tracking-wide">Simulación</h2>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-widest">Forzar pulso de partidos</p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mb-6 leading-relaxed">Procesa y finaliza todos los partidos con fecha vencida. Útil tras resetear jornadas manualmente.</p>
+                <button
+                  onClick={forzarSimulacion}
+                  disabled={isGenerating || loading}
+                  className="w-full py-4 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
+                >
+                  {isGenerating ? <Activity className="animate-spin" size={16} /> : <Zap size={16} />}
+                  {isGenerating ? 'Simulando...' : 'Simular Partidos Pendientes'}
                 </button>
               </div>
 
