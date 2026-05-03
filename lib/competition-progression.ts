@@ -241,7 +241,11 @@ const insertMatches = async (supabaseAdmin: SupabaseClient, rows: MatchInsertRow
   }
 };
 
-const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number) => {
+const fetchGroupContext = async (
+  supabaseAdmin: SupabaseClient,
+  groupId: number,
+  seasonNumber?: number
+) => {
   const teamsResultWithStandings = await supabaseAdmin
     .from('clubes')
     .select('id, nombre, grupo_id, league_id, status, pts, v, d')
@@ -269,17 +273,16 @@ const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number)
     return { teams: groupTeams, matches: [] as GroupMatchRow[] };
   }
 
+  const buildMatchQuery = (side: 'home_team_id' | 'away_team_id') => {
+    const q = supabaseAdmin
+      .from('matches')
+      .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
+      .in(side, teamIds);
+    return seasonNumber ? q.eq('season_number', seasonNumber) : q;
+  };
+
   const [{ data: homeMatches, error: homeMatchesError }, { data: awayMatches, error: awayMatchesError }] =
-    await Promise.all([
-      supabaseAdmin
-        .from('matches')
-        .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
-        .in('home_team_id', teamIds),
-      supabaseAdmin
-        .from('matches')
-        .select('id, jornada, fase, season_number, played, home_team_id, away_team_id, home_score, away_score')
-        .in('away_team_id', teamIds)
-    ]);
+    await Promise.all([buildMatchQuery('home_team_id'), buildMatchQuery('away_team_id')]);
 
   if (homeMatchesError || awayMatchesError) {
     throw new Error(
@@ -296,7 +299,10 @@ const fetchGroupContext = async (supabaseAdmin: SupabaseClient, groupId: number)
       teamIdSet.has(String(match.home_team_id)) &&
       teamIdSet.has(String(match.away_team_id))
   );
-  const mergedMatches = filterMatchesBySeason(allGroupMatches, getLatestSeasonNumber(allGroupMatches));
+
+  const mergedMatches = seasonNumber
+    ? allGroupMatches.filter((m) => normalizeSeasonNumber(m.season_number) === seasonNumber)
+    : filterMatchesBySeason(allGroupMatches, getLatestSeasonNumber(allGroupMatches));
 
   return {
     teams: groupTeams,
@@ -442,9 +448,10 @@ const createFinalsIfNeeded = async (supabaseAdmin: SupabaseClient, matches: Grou
 
 export const advanceGroupPlayoffsForGroup = async (
   supabaseAdmin: SupabaseClient,
-  groupId: number
+  groupId: number,
+  seasonNumber?: number
 ): Promise<CompetitionProgressionResult> => {
-  const { teams, matches } = await fetchGroupContext(supabaseAdmin, groupId);
+  const { teams, matches } = await fetchGroupContext(supabaseAdmin, groupId, seasonNumber);
 
   if (teams.length < 8) {
     return {
@@ -489,7 +496,7 @@ export const advanceGroupPlayoffsForGroup = async (
     };
   }
 
-  const refreshedContext = await fetchGroupContext(supabaseAdmin, groupId);
+  const refreshedContext = await fetchGroupContext(supabaseAdmin, groupId, seasonNumber);
   const finalsResult = await createFinalsIfNeeded(supabaseAdmin, refreshedContext.matches);
   if (finalsResult.createdMatches > 0) {
     return {
@@ -513,14 +520,16 @@ export const advanceGroupPlayoffsForGroup = async (
 export const advanceAllGroupPlayoffs = async (
   supabaseAdmin: SupabaseClient
 ): Promise<CompetitionProgressionSweepResult> => {
-  const { data: groups, error: groupsError } = await supabaseAdmin
-    .from('grupos_liga')
-    .select('id')
-    .order('id', { ascending: true });
+  const [{ data: groups, error: groupsError }, { data: latestSeasonRow }] = await Promise.all([
+    supabaseAdmin.from('grupos_liga').select('id').order('id', { ascending: true }),
+    supabaseAdmin.from('matches').select('season_number').order('season_number', { ascending: false }).limit(1).maybeSingle()
+  ]);
 
   if (groupsError) {
     throw new Error(`No se pudieron cargar grupos para avanzar playoffs: ${toErrorText(groupsError)}`);
   }
+
+  const seasonNumber = latestSeasonRow ? normalizeSeasonNumber(latestSeasonRow.season_number) : undefined;
 
   const groupIds = [...new Set(
     ((groups || []) as Array<{ id?: number | string | null }>)
@@ -533,16 +542,21 @@ export const advanceAllGroupPlayoffs = async (
   const createdPhaseSet = new Set<string>();
   const errors: Array<{ groupId: number; reason: string }> = [];
 
-  for (const groupId of groupIds) {
-    try {
-      const result = await advanceGroupPlayoffsForGroup(supabaseAdmin, groupId);
+  const results = await Promise.allSettled(
+    groupIds.map((groupId) => advanceGroupPlayoffsForGroup(supabaseAdmin, groupId, seasonNumber))
+  );
+
+  for (let i = 0; i < results.length; i++) {
+    const settled = results[i];
+    if (settled.status === 'rejected') {
+      errors.push({ groupId: groupIds[i], reason: toErrorText(settled.reason) });
+    } else {
+      const result = settled.value;
       if (result.createdMatches > 0) {
         groupsAdvanced += 1;
         createdMatches += result.createdMatches;
         result.createdPhases.forEach((phase) => createdPhaseSet.add(phase));
       }
-    } catch (error) {
-      errors.push({ groupId, reason: toErrorText(error) });
     }
   }
 
