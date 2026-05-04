@@ -440,14 +440,8 @@ function TacticsBoardContent() {
                     >
                       {player ? (
                         <>
-                          {/* OVR + FORMA ICON */}
-                          <div className="relative">
-                              <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-lg border-2 shadow-sm ${getOverallColor(effectiveOverall)}`}>
-                                  {effectiveOverall}
-                              </div>
-                              <div className="absolute -bottom-2 -right-1 bg-slate-900 rounded-full p-0.5 border border-slate-700" title={getFormLabel(player.forma)}>
-                                  {renderFormIcon(player.forma)}
-                              </div>
+                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-black text-lg border-2 shadow-sm shrink-0 ${getOverallColor(effectiveOverall)}`}>
+                              {effectiveOverall}
                           </div>
 
                           <div className="flex-1 min-w-0 pl-1">
@@ -534,13 +528,8 @@ function TacticsBoardContent() {
                           onDragStart={(e) => handleDragStart(e, player.id)} 
                           className="bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500/50 p-2.5 rounded-xl flex items-center gap-3 cursor-grab group transition-all"
                         >
-                            <div className="relative">
-                                <div className={`w-8 h-8 rounded flex items-center justify-center font-black text-xs border shrink-0 ${getOverallColor(roleRating)} shadow-sm`}>
-                                    {roleRating}
-                                </div>
-                                <div className="absolute -bottom-1 -right-1 bg-slate-900 rounded-full p-0.5">
-                                    {renderFormIcon(player.forma)}
-                                </div>
+                            <div className={`w-8 h-8 rounded flex items-center justify-center font-black text-xs border shrink-0 ${getOverallColor(roleRating)} shadow-sm`}>
+                                {roleRating}
                             </div>
 
                             <div className="flex-1 min-w-0 pl-1">
