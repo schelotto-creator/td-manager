@@ -350,7 +350,7 @@ const fetchRosterByTeamIds = async (
   const warnings: string[] = [];
   let selectFields = PLAYER_SELECT_FIELDS;
 
-  for (const batch of chunkArray(uniqueTeamIds, 20)) {
+  for (const batch of chunkArray(uniqueTeamIds, 5)) {
     const { data, error } = await supabaseAdmin
       .from('players')
       .select(selectFields)
