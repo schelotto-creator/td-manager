@@ -18,6 +18,7 @@ import {
   Shield, Swords, Target, Clock, Calendar, Trash2, Wand2, AlertTriangle, Zap, Activity, Flame, Snowflake, Minus, TrendingUp, TrendingDown
 } from 'lucide-react';
 import Link from 'next/link';
+import { formaToStars, FORMA_STAR_COLORS, FORMA_STAR_LABELS } from '@/lib/player-forma';
 
 // --- TIPOS ---
 type Player = {
@@ -321,20 +322,26 @@ function TacticsBoardContent() {
   };
 
   const getFormLabel = (forma: number) => {
-    if (forma >= 95) return `On Fire: ${forma}`;
-    if (forma >= 85) return `Excelente: ${forma}`;
-    if (forma <= 50) return `Crisis: ${forma}`;
-    if (forma <= 65) return `Mala Racha: ${forma}`;
-    return `Normal: ${forma}`;
+    const stars = formaToStars(forma);
+    return `${FORMA_STAR_LABELS[stars]} (${forma})`;
   };
 
-  // NUEVO SISTEMA VISUAL DE FORMA (5 NIVELES)
   const renderFormIcon = (forma: number) => {
-    if (forma >= 95) return <Flame size={14} className="text-orange-500 animate-pulse" />;
-    if (forma >= 85) return <TrendingUp size={14} className="text-green-400" />;
-    if (forma <= 50) return <Snowflake size={14} className="text-blue-400" />;
-    if (forma <= 65) return <TrendingDown size={14} className="text-yellow-500" />;
-    return <Minus size={14} className="text-slate-500" />;
+    if (forma >= 90) return <Flame size={14} className="text-orange-500 animate-pulse" />;
+    if (forma >= 80) return <TrendingUp size={14} className="text-green-400" />;
+    if (forma >= 68) return <Minus size={14} className="text-slate-500" />;
+    if (forma >= 54) return <TrendingDown size={14} className="text-yellow-500" />;
+    return <Snowflake size={14} className="text-blue-400" />;
+  };
+
+  const renderFormStars = (forma: number, size: 'sm' | 'xs' = 'xs') => {
+    const stars = formaToStars(forma);
+    const cls = size === 'sm' ? 'text-xs' : 'text-[9px]';
+    return (
+      <span className={`font-black ${cls} ${FORMA_STAR_COLORS[stars]}`} title={getFormLabel(forma)}>
+        {'★'.repeat(stars)}{'☆'.repeat(5 - stars)}
+      </span>
+    );
   };
 
   if (loading) {
@@ -453,7 +460,7 @@ function TacticsBoardContent() {
                                   )}
                               </div>
                               <div className="font-bold text-white text-sm truncate leading-tight">{player.name}</div>
-                              
+                              <div className="mt-0.5">{renderFormStars(player.forma)}</div>
                               <div className="flex items-center gap-1 mt-1">
                                   <Zap size={8} className={estimatedStamina < 50 ? 'text-red-500' : 'text-yellow-400'}/>
                                   <div className="flex-1 h-1 bg-white/10 rounded-full overflow-hidden">
@@ -537,8 +544,9 @@ function TacticsBoardContent() {
                             </div>
 
                             <div className="flex-1 min-w-0 pl-1">
-                                <div className="font-bold text-sm text-slate-200 truncate group-hover:text-white transition-colors">
-                                  {player.name} <span className="text-[9px] font-normal text-slate-500 ml-1">F:{player.forma}</span>
+                                <div className="font-bold text-sm text-slate-200 truncate group-hover:text-white transition-colors flex items-center gap-1.5">
+                                  <span className="truncate">{player.name}</span>
+                                  {renderFormStars(player.forma)}
                                 </div>
                                 <div className="flex justify-between items-center mt-1">
                                     <span className="text-[9px] bg-slate-800 text-slate-400 uppercase font-black tracking-widest px-1.5 py-0.5 rounded">{player.position}</span>
