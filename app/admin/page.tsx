@@ -1212,11 +1212,17 @@ export default function AdminDashboard() {
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         body: JSON.stringify({ maxMatches: 300 })
       });
-      const data = await res.json();
+      const text = await res.text();
+      let data: { error?: string; scheduledMatches?: Record<string, unknown> };
+      try {
+        data = JSON.parse(text);
+      } catch {
+        throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
+      }
       if (!res.ok) throw new Error(data.error || 'Error desconocido');
-      const s = data.scheduledMatches;
+      const s = data.scheduledMatches as any;
       addLog(`✅ Pulso completado: ${s.finalized} finalizados, ${s.simulated} simulados, ${s.skipped} omitidos`);
-      if (s.warnings?.length > 0) addLog(`⚠️ Avisos (${s.warnings.length}): ${s.warnings.join(' | ')}`);
+      if (s.warnings?.length > 0) addLog(`⚠️ Avisos (${s.warnings.length}): ${(s.warnings as string[]).join(' | ')}`);
       if (s.errors?.length > 0) addLog(`❌ ${s.errors.length} errores: ${s.errors.map((e: any) => e.reason).join(', ')}`);
     } catch (err: any) {
       addLog(`❌ ERROR: ${err.message}`);
