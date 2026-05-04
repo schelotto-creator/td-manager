@@ -1216,7 +1216,8 @@ export default function AdminDashboard() {
       if (!res.ok) throw new Error(data.error || 'Error desconocido');
       const s = data.scheduledMatches;
       addLog(`✅ Pulso completado: ${s.finalized} finalizados, ${s.simulated} simulados, ${s.skipped} omitidos`);
-      if (s.errors?.length > 0) addLog(`⚠️ ${s.errors.length} errores: ${s.errors.map((e: any) => e.reason).join(', ')}`);
+      if (s.warnings?.length > 0) addLog(`⚠️ Avisos (${s.warnings.length}): ${s.warnings.join(' | ')}`);
+      if (s.errors?.length > 0) addLog(`❌ ${s.errors.length} errores: ${s.errors.map((e: any) => e.reason).join(', ')}`);
     } catch (err: any) {
       addLog(`❌ ERROR: ${err.message}`);
     } finally {
