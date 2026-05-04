@@ -17,7 +17,7 @@ import {
   Users, ChevronLeft, Search, X, 
   Target, Shield, Zap, Hand, Activity, DollarSign, Brain, UserMinus, HandCoins
 } from 'lucide-react';
-import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
+import { filterMatchesBySeason, getLatestSeasonNumber, normalizeSeasonNumber } from '@/lib/match-seasons';
 
 // --- TIPOS ---
 type Player = {
@@ -349,11 +349,11 @@ export default function TeamManagement() {
         const [rosterRes, dynamicPositionConfig, seasonRes] = await Promise.all([
           supabase.from('players').select('*').eq('team_id', myTeam.id),
           fetchPositionOverallConfig(supabase),
-          supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500)
+          supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(500)
         ]);
 
         const uniqueSeasons = [...new Set(
-          ((seasonRes.data || []) as { season_number: number }[]).map((r) => Number(r.season_number)).filter((n) => Number.isFinite(n) && n > 0)
+          ((seasonRes.data || []) as { season_number: number | null }[]).map((r) => normalizeSeasonNumber(r.season_number))
         )].sort((a, b) => b - a);
         setAvailableSeasons(uniqueSeasons);
         if (uniqueSeasons.length > 0) setSelectedModalSeason(uniqueSeasons[0]);
