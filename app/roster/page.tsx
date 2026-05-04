@@ -111,6 +111,49 @@ const normalizeSeasonStats = (stats?: Partial<SeasonStatsSummary> | null): Seaso
   efficiency: Number(stats?.efficiency || 0)
 });
 
+const fetchPlayerStatsForSeason = async (playerId: number, seasonNumber: number): Promise<SeasonStatsSummary> => {
+  const { data: viewData, error: viewError } = await supabase
+    .from('view_player_season_stats')
+    .select('id,games_played,ppg,rpg,apg,efficiency')
+    .eq('id', playerId)
+    .eq('season_number', seasonNumber)
+    .maybeSingle();
+
+  if (!viewError && viewData) return normalizeSeasonStats(viewData as Partial<SeasonStatsSummary>);
+
+  const { data: rawStats, error: rawError } = await supabase
+    .from('player_stats')
+    .select('match_id,player_id,points,rebounds,assists')
+    .eq('player_id', playerId);
+
+  if (rawError || !rawStats || rawStats.length === 0) return EMPTY_SEASON_STATS;
+
+  const matchIds = [...new Set((rawStats as RawPlayerStatsRow[]).map((r) => Number(r.match_id)).filter(Number.isFinite))];
+  if (matchIds.length === 0) return EMPTY_SEASON_STATS;
+
+  const activeMatchIds = new Set<number>();
+  for (const batch of chunkArray(matchIds, 200)) {
+    const { data: matchData } = await supabase.from('matches').select('id,season_number').in('id', batch);
+    filterMatchesBySeason((matchData || []) as MatchSeasonRow[], seasonNumber)
+      .forEach((m) => { const id = Number(m.id); if (Number.isFinite(id)) activeMatchIds.add(id); });
+  }
+
+  const seasonRows = (rawStats as RawPlayerStatsRow[]).filter((r) => activeMatchIds.has(Number(r.match_id)));
+  if (seasonRows.length === 0) return EMPTY_SEASON_STATS;
+
+  const games = Math.max(1, new Set(seasonRows.map((r) => Number(r.match_id))).size);
+  const points = seasonRows.reduce((s, r) => s + Number(r.points || 0), 0);
+  const rebounds = seasonRows.reduce((s, r) => s + Number(r.rebounds || 0), 0);
+  const assists = seasonRows.reduce((s, r) => s + Number(r.assists || 0), 0);
+  return {
+    ppg: Number((points / games).toFixed(1)),
+    rpg: Number((rebounds / games).toFixed(1)),
+    apg: Number((assists / games).toFixed(1)),
+    games_played: games,
+    efficiency: Number(((points + rebounds + assists) / games).toFixed(1))
+  };
+};
+
 const fetchSeasonStatsByTeam = async (teamId: string) => {
   const statsByPlayerId = new Map<number, SeasonStatsSummary>();
 
@@ -266,6 +309,12 @@ export default function TeamManagement() {
   // Pestañas del Modal
   const [activeTab, setActiveTab] = useState<'attributes' | 'stats'>('attributes');
 
+  // Season selector en modal
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
+  const [selectedModalSeason, setSelectedModalSeason] = useState<number | null>(null);
+  const [modalPlayerStats, setModalPlayerStats] = useState<SeasonStatsSummary | null>(null);
+  const [loadingModalStats, setLoadingModalStats] = useState(false);
+
   useEffect(() => {
     loadData();
   }, []);
@@ -273,6 +322,18 @@ export default function TeamManagement() {
   useEffect(() => {
     filterAndSortPlayers();
   }, [players, searchTerm, positionFilter, sortConfig]);
+
+  useEffect(() => {
+    if (!selectedPlayer || selectedModalSeason === null) {
+      setModalPlayerStats(null);
+      return;
+    }
+    setLoadingModalStats(true);
+    fetchPlayerStatsForSeason(selectedPlayer.id, selectedModalSeason)
+      .then(setModalPlayerStats)
+      .catch(() => setModalPlayerStats(EMPTY_SEASON_STATS))
+      .finally(() => setLoadingModalStats(false));
+  }, [selectedPlayer?.id, selectedModalSeason]);
 
   const loadData = async () => {
     try {
@@ -285,10 +346,17 @@ export default function TeamManagement() {
         setTeamId(myTeam.id);
         setTeamCash(myTeam.presupuesto || 0);
 
-        const [rosterRes, dynamicPositionConfig] = await Promise.all([
+        const [rosterRes, dynamicPositionConfig, seasonRes] = await Promise.all([
           supabase.from('players').select('*').eq('team_id', myTeam.id),
-          fetchPositionOverallConfig(supabase)
+          fetchPositionOverallConfig(supabase),
+          supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500)
         ]);
+
+        const uniqueSeasons = [...new Set(
+          ((seasonRes.data || []) as { season_number: number }[]).map((r) => Number(r.season_number)).filter((n) => Number.isFinite(n) && n > 0)
+        )].sort((a, b) => b - a);
+        setAvailableSeasons(uniqueSeasons);
+        if (uniqueSeasons.length > 0) setSelectedModalSeason(uniqueSeasons[0]);
         const roster = rosterRes.data;
         setPositionOverallConfig(dynamicPositionConfig);
 
@@ -713,19 +781,41 @@ export default function TeamManagement() {
                         </div>
                     ) : (
                         <div>
-                            {selectedPlayer.seasonStats?.games_played && selectedPlayer.seasonStats.games_played > 0 ? (
+                            {availableSeasons.length >= 1 && (
+                                <div className="flex items-center gap-3 mb-6">
+                                    <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest shrink-0">Temporada</label>
+                                    <div className="flex gap-1 flex-wrap">
+                                        {availableSeasons.map((s) => (
+                                            <button
+                                                key={s}
+                                                onClick={() => setSelectedModalSeason(s)}
+                                                className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors border ${
+                                                    selectedModalSeason === s
+                                                        ? 'bg-cyan-600 border-cyan-500 text-white'
+                                                        : 'bg-slate-800 border-white/10 text-slate-400 hover:text-white hover:bg-slate-700'
+                                                }`}
+                                            >
+                                                T{s}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {loadingModalStats ? (
+                                <div className="flex items-center justify-center h-40 text-slate-500 animate-pulse text-xs font-bold uppercase">Cargando...</div>
+                            ) : modalPlayerStats && modalPlayerStats.games_played > 0 ? (
                                 <div className="space-y-6">
                                     <div className="grid grid-cols-3 gap-4">
                                         <div className="bg-surface p-4 rounded-xl border border-white/10 text-center">
-                                            <div className="text-3xl font-display font-bold text-white mb-1">{selectedPlayer.seasonStats.ppg.toFixed(1)}</div>
+                                            <div className="text-3xl font-display font-bold text-white mb-1">{modalPlayerStats.ppg.toFixed(1)}</div>
                                             <div className="text-[10px] uppercase font-bold text-slate-500">Puntos (PPG)</div>
                                         </div>
                                         <div className="bg-surface p-4 rounded-xl border border-white/10 text-center">
-                                            <div className={`text-3xl font-display font-bold text-white mb-1`}>{selectedPlayer.seasonStats.rpg.toFixed(1)}</div>
+                                            <div className="text-3xl font-display font-bold text-white mb-1">{modalPlayerStats.rpg.toFixed(1)}</div>
                                             <div className="text-[10px] uppercase font-bold text-slate-500">Rebotes (RPG)</div>
                                         </div>
                                         <div className="bg-surface p-4 rounded-xl border border-white/10 text-center">
-                                            <div className="text-3xl font-display font-bold text-white mb-1">{selectedPlayer.seasonStats.apg.toFixed(1)}</div>
+                                            <div className="text-3xl font-display font-bold text-white mb-1">{modalPlayerStats.apg.toFixed(1)}</div>
                                             <div className="text-[10px] uppercase font-bold text-slate-500">Asistencias (APG)</div>
                                         </div>
                                     </div>
@@ -734,10 +824,10 @@ export default function TeamManagement() {
                                             <div className="text-sm font-bold text-primary uppercase mb-1">Valoración Media</div>
                                             <div className="text-xs text-slate-400">Rendimiento global por partido</div>
                                         </div>
-                                        <span className="text-4xl font-display font-bold text-white">{selectedPlayer.seasonStats.efficiency.toFixed(1)}</span>
+                                        <span className="text-4xl font-display font-bold text-white">{modalPlayerStats.efficiency.toFixed(1)}</span>
                                     </div>
                                     <div className="text-center">
-                                        <p className="text-xs text-slate-500">Datos basados en los <strong>{selectedPlayer.seasonStats.games_played}</strong> partidos jugados.</p>
+                                        <p className="text-xs text-slate-500">Datos basados en los <strong>{modalPlayerStats.games_played}</strong> partidos jugados.</p>
                                     </div>
                                 </div>
                             ) : (
