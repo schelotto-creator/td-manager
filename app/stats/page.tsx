@@ -183,7 +183,7 @@ export default function StatsPage() {
         return;
       }
 
-      const [{ data: myClub }, { data: ligas }, { data: grupos }, { data: seasonRows }] = await Promise.all([
+      const [{ data: myClub }, { data: ligas }, { data: grupos }, { data: seasonRows }, { data: nullSeasonRows }] = await Promise.all([
         supabase
           .from('clubes')
           .select('id, nombre, league_id, grupo_id')
@@ -191,12 +191,15 @@ export default function StatsPage() {
           .maybeSingle(),
         supabase.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
         supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
-        supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(500)
+        supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500),
+        supabase.from('matches').select('id').is('season_number', null).limit(1)
       ]);
 
-      const uniqueSeasons = [...new Set(
-        (seasonRows || []).map((r) => normalizeSeasonNumber((r as { season_number: number | null }).season_number))
-      )].sort((a, b) => b - a);
+      const namedSeasons = [...new Set(
+        (seasonRows || []).map((r) => Number((r as { season_number: number }).season_number)).filter(Number.isFinite)
+      )];
+      if ((nullSeasonRows || []).length > 0 && !namedSeasons.includes(1)) namedSeasons.push(1);
+      const uniqueSeasons = namedSeasons.sort((a, b) => b - a);
       setAvailableSeasons(uniqueSeasons);
       setSelectedSeason(uniqueSeasons[0] ?? 1);
 
