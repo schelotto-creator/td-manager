@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info } from 'lucide-react';
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
+import { normalizeSeasonNumber } from '@/lib/match-seasons';
 
 type Manager = {
   nombre: string;
@@ -68,6 +69,7 @@ export default function Dashboard() {
   const [leagueName, setLeagueName] = useState<string>('Liga en curso');
   const [nextMatch, setNextMatch] = useState<NextMatch | null>(null);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [seasonStats, setSeasonStats] = useState<{ pj: number; v: number; d: number; pts: number }>({ pj: 0, v: 0, d: 0, pts: 0 });
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -98,6 +100,33 @@ export default function Dashboard() {
           const { data: league } = await supabase.from('ligas').select('nombre').eq('id', clubData.league_id).maybeSingle();
           if (league?.nombre) setLeagueName(league.nombre);
         }
+
+        const { data: playedMatchesData } = await supabase
+          .from('matches')
+          .select('home_team_id,away_team_id,home_score,away_score,season_number')
+          .eq('played', true)
+          .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
+          .order('season_number', { ascending: false })
+          .limit(300);
+
+        const playedMatches = (playedMatchesData || []) as {
+          home_team_id: string; away_team_id: string;
+          home_score: number; away_score: number; season_number: number | null;
+        }[];
+        const currentSeason = playedMatches.reduce(
+          (max, m) => Math.max(max, normalizeSeasonNumber(m.season_number)), 1
+        );
+        const seasonMatches = playedMatches.filter(
+          (m) => normalizeSeasonNumber(m.season_number) === currentSeason
+        );
+        let sv = 0, sd = 0;
+        for (const m of seasonMatches) {
+          const isHome = String(m.home_team_id) === String(clubData.id);
+          const mine = isHome ? m.home_score : m.away_score;
+          const theirs = isHome ? m.away_score : m.home_score;
+          if (mine > theirs) sv++; else sd++;
+        }
+        setSeasonStats({ pj: seasonMatches.length, v: sv, d: sd, pts: sv * 2 + sd });
 
         const { data: matches } = await supabase
           .from('matches')
@@ -272,15 +301,15 @@ export default function Dashboard() {
               </div>
               <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">PJ</div>
-                <div className="text-white font-black text-lg mt-1">{club.pj ?? 0}</div>
+                <div className="text-white font-black text-lg mt-1">{seasonStats.pj}</div>
               </div>
               <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">V-D</div>
-                <div className="text-white font-black text-lg mt-1">{club.v ?? 0}-{club.d ?? 0}</div>
+                <div className="text-white font-black text-lg mt-1">{seasonStats.v}-{seasonStats.d}</div>
               </div>
               <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">PTS</div>
-                <div className="text-cyan-300 font-black text-lg mt-1">{club.pts ?? 0}</div>
+                <div className="text-cyan-300 font-black text-lg mt-1">{seasonStats.pts}</div>
               </div>
             </div>
           </div>
