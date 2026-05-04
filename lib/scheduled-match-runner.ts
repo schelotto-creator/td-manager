@@ -9,6 +9,7 @@ import {
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
 import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
+import { applyMatchFormaUpdate } from '@/lib/player-forma';
 import {
   advanceAllGroupPlayoffs,
   advanceGroupPlayoffsForMatch,
@@ -810,10 +811,13 @@ const finalizeMatchPersistence = async (
     let warning = 'RPC no disponible, se usó cierre legacy.';
 
     try {
-      const progressionWarning = await applyMatchExperienceProgression(supabaseAdmin, events, statsRows);
-      if (progressionWarning) warning = `${warning} ${progressionWarning}`.trim();
-    } catch (progressionError) {
-      warning = `${warning} ${toErrorText(progressionError)}`.trim();
+      const [progressionWarning, formaWarning] = await Promise.all([
+        applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
+        applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
+      ]);
+      warning = [warning, progressionWarning, formaWarning].filter(Boolean).join(' ').trim();
+    } catch (postError) {
+      warning = `${warning} ${toErrorText(postError)}`.trim();
     }
 
     return { status: 'ok', warning };
@@ -838,15 +842,18 @@ const finalizeMatchPersistence = async (
   }
 
   try {
-    const progressionWarning = await applyMatchExperienceProgression(supabaseAdmin, events, statsRows);
+    const [progressionWarning, formaWarning] = await Promise.all([
+      applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
+      applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
+    ]);
     return {
       status: 'ok',
-      warning: [warning, standingsWarning, progressionWarning].filter(Boolean).join(' ').trim() || null
+      warning: [warning, standingsWarning, progressionWarning, formaWarning].filter(Boolean).join(' ').trim() || null
     };
-  } catch (progressionError) {
+  } catch (postError) {
     return {
       status: 'ok',
-      warning: [warning, standingsWarning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
+      warning: [warning, standingsWarning, toErrorText(postError)].filter(Boolean).join(' ').trim() || null
     };
   }
 };
