@@ -830,16 +830,23 @@ const finalizeMatchPersistence = async (
     throw new Error(`Respuesta inesperada al cerrar partido: ${status}`);
   }
 
+  let standingsWarning: string | null = null;
+  try {
+    await applyRegularSeasonStandings(supabaseAdmin, match, finalHome, finalAway);
+  } catch (standingsError) {
+    standingsWarning = toErrorText(standingsError);
+  }
+
   try {
     const progressionWarning = await applyMatchExperienceProgression(supabaseAdmin, events, statsRows);
     return {
       status: 'ok',
-      warning: [warning, progressionWarning].filter(Boolean).join(' ').trim() || null
+      warning: [warning, standingsWarning, progressionWarning].filter(Boolean).join(' ').trim() || null
     };
   } catch (progressionError) {
     return {
       status: 'ok',
-      warning: [warning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
+      warning: [warning, standingsWarning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
     };
   }
 };
