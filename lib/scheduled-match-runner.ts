@@ -1179,6 +1179,26 @@ export const runScheduledMatches = async (
       const homeGamePlan = extractTeamGamePlan(match.home_tactics, homeTeam);
       const awayGamePlan = extractTeamGamePlan(match.away_tactics, awayTeam);
 
+      // Persist the resolved game plan so the match viewer shows what was actually used
+      const tacticsToSave: Record<string, unknown> = {};
+      if (!match.home_tactics && homeGamePlan.rotations) {
+        tacticsToSave.home_tactics = {
+          rotations: homeGamePlan.rotations,
+          offense: homeGamePlan.offenseStyle,
+          defense: homeGamePlan.defenseStyle
+        };
+      }
+      if (!match.away_tactics && awayGamePlan.rotations) {
+        tacticsToSave.away_tactics = {
+          rotations: awayGamePlan.rotations,
+          offense: awayGamePlan.offenseStyle,
+          defense: awayGamePlan.defenseStyle
+        };
+      }
+      if (Object.keys(tacticsToSave).length > 0) {
+        await supabaseAdmin.from('matches').update(tacticsToSave).eq('id', match.id).eq('played', false);
+      }
+
       const simulation = generateMatchSimulation({
         homeRoster: simulationHomeRoster,
         awayRoster: simulationAwayRoster,
