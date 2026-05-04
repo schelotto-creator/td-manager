@@ -33,9 +33,8 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: 'Falta token de sesión.' }, { status: 401 });
   }
 
-  const supabaseAdmin = getSupabaseAdmin();
-
   try {
+    const supabaseAdmin = getSupabaseAdmin();
     const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
     if (authError || !authData?.user) {
       return NextResponse.json({ ok: false, error: 'Sesión inválida.' }, { status: 401 });
