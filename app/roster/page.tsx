@@ -346,15 +346,18 @@ export default function TeamManagement() {
         setTeamId(myTeam.id);
         setTeamCash(myTeam.presupuesto || 0);
 
-        const [rosterRes, dynamicPositionConfig, seasonRes] = await Promise.all([
+        const [rosterRes, dynamicPositionConfig, seasonRes, nullSeasonRes] = await Promise.all([
           supabase.from('players').select('*').eq('team_id', myTeam.id),
           fetchPositionOverallConfig(supabase),
-          supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(500)
+          supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500),
+          supabase.from('matches').select('id').is('season_number', null).limit(1)
         ]);
 
-        const uniqueSeasons = [...new Set(
-          ((seasonRes.data || []) as { season_number: number | null }[]).map((r) => normalizeSeasonNumber(r.season_number))
-        )].sort((a, b) => b - a);
+        const namedSeasons = [...new Set(
+          ((seasonRes.data || []) as { season_number: number }[]).map((r) => Number(r.season_number)).filter(Number.isFinite)
+        )];
+        if ((nullSeasonRes.data || []).length > 0 && !namedSeasons.includes(1)) namedSeasons.push(1);
+        const uniqueSeasons = namedSeasons.sort((a, b) => b - a);
         setAvailableSeasons(uniqueSeasons);
         if (uniqueSeasons.length > 0) setSelectedModalSeason(uniqueSeasons[0]);
         const roster = rosterRes.data;
