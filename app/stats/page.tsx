@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { filterMatchesBySeason } from '@/lib/match-seasons';
+import { filterMatchesBySeason, normalizeSeasonNumber } from '@/lib/match-seasons';
 
 type CategoryKey = 'ppg' | 'rpg' | 'apg' | 'efficiency';
 
@@ -191,11 +191,11 @@ export default function StatsPage() {
           .maybeSingle(),
         supabase.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
         supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
-        supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500)
+        supabase.from('matches').select('season_number').order('season_number', { ascending: false }).limit(500)
       ]);
 
       const uniqueSeasons = [...new Set(
-        (seasonRows || []).map((r) => Number(r.season_number)).filter((n) => Number.isFinite(n) && n > 0)
+        (seasonRows || []).map((r) => normalizeSeasonNumber((r as { season_number: number | null }).season_number))
       )].sort((a, b) => b - a);
       setAvailableSeasons(uniqueSeasons);
       setSelectedSeason(uniqueSeasons[0] ?? 1);
