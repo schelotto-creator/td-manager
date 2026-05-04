@@ -535,7 +535,7 @@ export default function StatsPage() {
             </div>
           </div>
 
-          {availableSeasons.length > 1 && (
+          {availableSeasons.length >= 1 && (
             <div className="flex items-center gap-3">
               <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest shrink-0">Temporada</label>
               <div className="flex gap-1 flex-wrap">
