@@ -15,7 +15,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
+import { filterMatchesBySeason } from '@/lib/match-seasons';
 
 type CategoryKey = 'ppg' | 'rpg' | 'apg' | 'efficiency';
 
@@ -132,6 +132,9 @@ export default function StatsPage() {
   const [myTeamOnly, setMyTeamOnly] = useState(false);
   const [filtersReady, setFiltersReady] = useState(false);
 
+  const [availableSeasons, setAvailableSeasons] = useState<number[]>([]);
+  const [selectedSeason, setSelectedSeason] = useState<number | null>(null);
+
   const groupOptions = useMemo(
     () => groups.filter((g) => g.liga_id === selectedLeagueId),
     [groups, selectedLeagueId]
@@ -180,15 +183,22 @@ export default function StatsPage() {
         return;
       }
 
-      const [{ data: myClub }, { data: ligas }, { data: grupos }] = await Promise.all([
+      const [{ data: myClub }, { data: ligas }, { data: grupos }, { data: seasonRows }] = await Promise.all([
         supabase
           .from('clubes')
           .select('id, nombre, league_id, grupo_id')
           .eq('owner_id', user.id)
           .maybeSingle(),
         supabase.from('ligas').select('id, nombre, nivel').order('nivel', { ascending: true }),
-        supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true })
+        supabase.from('grupos_liga').select('id, nombre, liga_id').order('id', { ascending: true }),
+        supabase.from('matches').select('season_number').not('season_number', 'is', null).order('season_number', { ascending: false }).limit(500)
       ]);
+
+      const uniqueSeasons = [...new Set(
+        (seasonRows || []).map((r) => Number(r.season_number)).filter((n) => Number.isFinite(n) && n > 0)
+      )].sort((a, b) => b - a);
+      setAvailableSeasons(uniqueSeasons);
+      setSelectedSeason(uniqueSeasons[0] ?? 1);
 
       const leaguesData = (ligas || []) as LigaRow[];
       const groupsData = (grupos || []) as GrupoRow[];
@@ -237,6 +247,12 @@ export default function StatsPage() {
       return;
     }
 
+    if (selectedSeason === null) {
+      setStats([]);
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setLoadError(null);
@@ -257,12 +273,14 @@ export default function StatsPage() {
         return;
       }
 
-      const { data: viewData, error: viewError } = await supabase
+      const viewQuery = supabase
         .from('view_player_season_stats')
         .select('id,name,position,team_name,team_id,games_played,ppg,rpg,apg,efficiency')
         .in('team_id', teamIds)
+        .eq('season_number', selectedSeason)
         .order(category, { ascending: false })
         .limit(50);
+      const { data: viewData, error: viewError } = await viewQuery;
 
       if (!viewError && viewData) {
         setStats((viewData as PlayerStats[]) || []);
@@ -319,15 +337,7 @@ export default function StatsPage() {
         return;
       }
 
-      const { data: latestSeasonRows, error: latestSeasonError } = await supabase
-        .from('matches')
-        .select('season_number')
-        .order('season_number', { ascending: false })
-        .limit(1);
-
-      if (latestSeasonError) throw latestSeasonError;
-
-      const activeSeasonNumber = getLatestSeasonNumber((latestSeasonRows || []) as MatchSeasonRow[]);
+      const activeSeasonNumber = selectedSeason;
       const statMatchIds = [...new Set(
         allRows
           .map((row) => Number(row.match_id))
@@ -419,7 +429,7 @@ export default function StatsPage() {
     } finally {
       setLoading(false);
     }
-  }, [selectedGroupId, category, myTeamOnly, myClubId]);
+  }, [selectedGroupId, category, myTeamOnly, myClubId, selectedSeason]);
 
   useEffect(() => {
     if (!filtersReady) return;
@@ -524,6 +534,27 @@ export default function StatsPage() {
               </button>
             </div>
           </div>
+
+          {availableSeasons.length > 1 && (
+            <div className="flex items-center gap-3">
+              <label className="text-[10px] text-slate-500 font-black uppercase tracking-widest shrink-0">Temporada</label>
+              <div className="flex gap-1 flex-wrap">
+                {availableSeasons.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setSelectedSeason(s)}
+                    className={`px-3 py-1 rounded-lg text-[10px] font-black uppercase tracking-widest transition-colors border ${
+                      selectedSeason === s
+                        ? 'bg-cyan-600 border-cyan-500 text-white'
+                        : 'bg-slate-800 border-white/10 text-slate-400 hover:text-white hover:bg-slate-700'
+                    }`}
+                  >
+                    T{s}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
 
           <button
             onClick={() => setMyTeamOnly((prev) => !prev)}
