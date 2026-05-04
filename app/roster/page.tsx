@@ -18,6 +18,7 @@ import {
   Target, Shield, Zap, Hand, Activity, DollarSign, Brain, UserMinus, HandCoins
 } from 'lucide-react';
 import { filterMatchesBySeason, getLatestSeasonNumber, normalizeSeasonNumber } from '@/lib/match-seasons';
+import { formaToStars, FORMA_STAR_LABELS, FORMA_STAR_COLORS } from '@/lib/player-forma';
 
 // --- TIPOS ---
 type Player = {
@@ -40,6 +41,7 @@ type Player = {
   dribbling: number;
   stamina: number;
   experience: number;
+  forma: number;
   // Stats de Temporada
   seasonStats?: {
       ppg: number;
@@ -373,7 +375,8 @@ export default function TeamManagement() {
                     ...p,
                     position: bestPosition,
                     nationality: p.nationality || 'USA', 
-                    experience: p.experience || 0, 
+                    experience: p.experience || 0,
+                    forma: Number(p.forma ?? 80),
                     overall: calculateRealOverall(p, dynamicPositionConfig),
                     efficiency: pStats.efficiency,
                     seasonStats: pStats
@@ -644,6 +647,7 @@ export default function TeamManagement() {
                             <th className="px-6 py-4 cursor-pointer hover:text-yellow-400 text-center" onClick={() => handleSort('efficiency')}>VAL</th>
                             <th className="px-6 py-4 text-center text-emerald-400">Salario (Sem)</th>
                             <th className="px-6 py-4 cursor-pointer hover:text-green-400 text-center" onClick={() => handleSort('stamina')}>Físico</th>
+                            <th className="px-6 py-4 cursor-pointer hover:text-emerald-300 text-center" onClick={() => handleSort('forma')}>Forma</th>
                             <th className="px-6 py-4 text-right"></th>
                         </tr>
                     </thead>
@@ -689,6 +693,16 @@ export default function TeamManagement() {
                                             <div className={`h-full ${player.stamina > 80 ? 'bg-green-500' : 'bg-red-500'}`} style={{width: `${player.stamina}%`}}></div>
                                         </div>
                                     </td>
+                                    <td className="px-6 py-4 text-center">
+                                        {(() => {
+                                            const stars = formaToStars(player.forma);
+                                            return (
+                                                <span className={`text-xs font-black ${FORMA_STAR_COLORS[stars]}`} title={`Forma: ${player.forma} — ${FORMA_STAR_LABELS[stars]}`}>
+                                                    {'★'.repeat(stars)}{'☆'.repeat(5 - stars)}
+                                                </span>
+                                            );
+                                        })()}
+                                    </td>
                                     <td className="px-6 py-4 text-right">
                                         <span className="text-xs font-bold text-primary opacity-0 group-hover:opacity-100 transition-opacity">VER →</span>
                                     </td>
@@ -728,8 +742,15 @@ export default function TeamManagement() {
                                 <span>|</span>
                                 <span>{selectedPlayer.height} cm</span>
                                 <span>|</span>
-                                {/* ETIQUETA DE EXPERIENCIA AÑADIDA AQUÍ */}
                                 <span className="flex items-center gap-1 text-purple-400 font-bold"><Brain size={14}/> {selectedPlayer.experience} EXP</span>
+                                {(() => {
+                                    const stars = formaToStars(selectedPlayer.forma);
+                                    return (
+                                        <span className={`flex items-center gap-1 font-black text-sm ${FORMA_STAR_COLORS[stars]}`}>
+                                            {'★'.repeat(stars)}{'☆'.repeat(5 - stars)} {FORMA_STAR_LABELS[stars]}
+                                        </span>
+                                    );
+                                })()}
                             </div>
                             <button
                                 onClick={() => releasePlayer(selectedPlayer)}
