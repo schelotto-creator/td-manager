@@ -1130,17 +1130,21 @@ export const runScheduledMatches = async (
   ]);
 
   const teamIds = [...new Set(candidateMatches.flatMap((m) => [String(m.home_team_id), String(m.away_team_id)]))];
-  const { data: teamsData, error: teamsError } = await supabaseAdmin
-    .from('clubes')
-    .select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense')
-    .in('id', teamIds);
-  if (teamsError) {
-    throw new Error(`No se pudieron cargar los equipos: ${toErrorText(teamsError)}`);
+
+  const allTeamsData: TeamRow[] = [];
+  for (const batch of chunkArray(teamIds, 20)) {
+    const { data: batchData, error: batchError } = await supabaseAdmin
+      .from('clubes')
+      .select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense')
+      .in('id', batch);
+    if (batchError) {
+      throw new Error(`No se pudieron cargar los equipos: ${toErrorText(batchError)}`);
+    }
+    allTeamsData.push(...((batchData || []) as TeamRow[]));
   }
 
   const rosterData = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
-  const normalizedTeams = ((teamsData || []) as TeamRow[]).map((team) => [String(team.id), team] as const);
-  const teamsById = new Map<string, TeamRow>(normalizedTeams);
+  const teamsById = new Map<string, TeamRow>(allTeamsData.map((team) => [String(team.id), team]));
   const playersByTeam = new Map<string, EnginePlayer[]>();
   rosterData.forEach((player) => {
     const teamId = String(player.team_id);
