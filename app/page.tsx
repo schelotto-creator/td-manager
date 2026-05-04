@@ -23,6 +23,7 @@ type Club = {
   escudo_forma?: string | null;
   escudo_url?: string | null;
   league_id?: number | null;
+  grupo_id?: string | null;
   pj?: number | null;
   v?: number | null;
   d?: number | null;
@@ -70,6 +71,7 @@ export default function Dashboard() {
   const [nextMatch, setNextMatch] = useState<NextMatch | null>(null);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
   const [seasonStats, setSeasonStats] = useState<{ pj: number; v: number; d: number; pts: number }>({ pj: 0, v: 0, d: 0, pts: 0 });
+  const [leaguePosition, setLeaguePosition] = useState<{ pos: number; total: number } | null>(null);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -96,23 +98,30 @@ export default function Dashboard() {
         setManager(managerData);
         setClub(clubData);
 
-        if (clubData.league_id) {
-          const { data: league } = await supabase.from('ligas').select('nombre').eq('id', clubData.league_id).maybeSingle();
-          if (league?.nombre) setLeagueName(league.nombre);
-        }
+        type MatchResult = { home_team_id: string; away_team_id: string; home_score: number; away_score: number; season_number: number | null };
 
-        const { data: playedMatchesData } = await supabase
-          .from('matches')
-          .select('home_team_id,away_team_id,home_score,away_score,season_number')
-          .eq('played', true)
-          .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
-          .order('season_number', { ascending: false })
-          .limit(300);
+        const grupoId = clubData.grupo_id;
+        const [leagueRes, groupClubsRes, playedMatchesRes] = await Promise.all([
+          clubData.league_id
+            ? supabase.from('ligas').select('nombre').eq('id', clubData.league_id).maybeSingle()
+            : Promise.resolve({ data: null }),
+          grupoId
+            ? supabase.from('clubes').select('id').eq('grupo_id', grupoId)
+            : Promise.resolve({ data: [] }),
+          supabase
+            .from('matches')
+            .select('home_team_id,away_team_id,home_score,away_score,season_number')
+            .eq('played', true)
+            .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
+            .order('season_number', { ascending: false })
+            .limit(300)
+        ]);
 
-        const playedMatches = (playedMatchesData || []) as {
-          home_team_id: string; away_team_id: string;
-          home_score: number; away_score: number; season_number: number | null;
-        }[];
+        if (leagueRes.data?.nombre) setLeagueName(leagueRes.data.nombre);
+
+        const groupClubIds = ((groupClubsRes.data || []) as { id: string }[]).map(c => String(c.id));
+
+        const playedMatches = (playedMatchesRes.data || []) as MatchResult[];
         const currentSeason = playedMatches.reduce(
           (max, m) => Math.max(max, normalizeSeasonNumber(m.season_number)), 1
         );
@@ -127,6 +136,32 @@ export default function Dashboard() {
           if (mine > theirs) sv++; else sd++;
         }
         setSeasonStats({ pj: seasonMatches.length, v: sv, d: sd, pts: sv * 2 + sd });
+
+        if (groupClubIds.length > 1) {
+          const { data: groupMatchesData } = await supabase
+            .from('matches')
+            .select('home_team_id,away_team_id,home_score,away_score,season_number')
+            .eq('played', true)
+            .in('home_team_id', groupClubIds)
+            .in('away_team_id', groupClubIds)
+            .limit(500);
+
+          const standings = new Map<string, { v: number; pts: number }>();
+          for (const id of groupClubIds) standings.set(id, { v: 0, pts: 0 });
+
+          for (const m of (groupMatchesData || []) as MatchResult[]) {
+            if (normalizeSeasonNumber(m.season_number) !== currentSeason) continue;
+            const homeWon = m.home_score > m.away_score;
+            const h = standings.get(String(m.home_team_id));
+            const a = standings.get(String(m.away_team_id));
+            if (h) { if (homeWon) { h.v++; h.pts += 2; } else { h.pts += 1; } }
+            if (a) { if (!homeWon) { a.v++; a.pts += 2; } else { a.pts += 1; } }
+          }
+
+          const sorted = [...standings.entries()].sort(([, a], [, b]) => b.pts - a.pts || b.v - a.v);
+          const pos = sorted.findIndex(([id]) => id === String(clubData.id)) + 1;
+          if (pos > 0) setLeaguePosition({ pos, total: groupClubIds.length });
+        }
 
         const { data: matches } = await supabase
           .from('matches')
@@ -275,6 +310,11 @@ export default function Dashboard() {
                   <span className="inline-flex items-center gap-1 bg-slate-950/80 border border-slate-700 px-3 py-1 rounded-full">
                     <Trophy size={13} className="text-cyan-400" /> {leagueName}
                   </span>
+                  {leaguePosition && (
+                    <span className="inline-flex items-center gap-1 bg-slate-950/80 border border-slate-700 px-3 py-1 rounded-full">
+                      <Trophy size={13} className="text-yellow-400" /> {leaguePosition.pos}º de {leaguePosition.total}
+                    </span>
+                  )}
                 </div>
               </div>
 
