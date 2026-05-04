@@ -186,6 +186,15 @@ const hasMissingSimulationColumns = (error: unknown) => {
   );
 };
 
+const hasMissingFormaColumn = (error: unknown) => {
+  const message = toErrorText(error).toLowerCase();
+  return (
+    message.includes('column players.forma does not exist') ||
+    message.includes('column "forma" does not exist') ||
+    (message.includes('forma') && message.includes('does not exist'))
+  );
+};
+
 const getScheduledMatchPrepMinutes = () => {
   const raw = Number(
     process.env.SCHEDULED_MATCH_PREP_MINUTES ||
@@ -327,29 +336,47 @@ const extractTeamGamePlan = (matchTactics: unknown, fallbackTeam?: TeamRow): Tea
   };
 };
 
+const PLAYER_SELECT_FIELDS =
+  'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id';
+const LEGACY_PLAYER_SELECT_FIELDS =
+  'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,team_id';
+
 const fetchRosterByTeamIds = async (
   supabaseAdmin: SupabaseClient,
   teamIds: string[]
-) => {
+): Promise<{ players: RawPlayerRow[]; warnings: string[] }> => {
   const uniqueTeamIds = [...new Set(teamIds.map((id) => String(id)).filter(Boolean))];
   const allPlayers: RawPlayerRow[] = [];
+  const warnings: string[] = [];
+  let selectFields = PLAYER_SELECT_FIELDS;
 
   for (const batch of chunkArray(uniqueTeamIds, 20)) {
     const { data, error } = await supabaseAdmin
       .from('players')
-      .select(
-        'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id'
-      )
+      .select(selectFields)
       .in('team_id', batch);
 
     if (error) {
+      if (hasMissingFormaColumn(error) && selectFields === PLAYER_SELECT_FIELDS) {
+        warnings.push('Schema legacy en players: columna forma no encontrada, se simula sin forma.');
+        selectFields = LEGACY_PLAYER_SELECT_FIELDS;
+        const { data: retryData, error: retryError } = await supabaseAdmin
+          .from('players')
+          .select(selectFields)
+          .in('team_id', batch);
+        if (retryError) {
+          throw new Error(`No se pudieron cargar plantillas: ${toErrorText(retryError)}`);
+        }
+        allPlayers.push(...((retryData as unknown as RawPlayerRow[] | null | undefined) || []));
+        continue;
+      }
       throw new Error(`No se pudieron cargar plantillas: ${toErrorText(error)}`);
     }
 
-    allPlayers.push(...((data as RawPlayerRow[] | null | undefined) || []));
+    allPlayers.push(...((data as unknown as RawPlayerRow[] | null | undefined) || []));
   }
 
-  return allPlayers;
+  return { players: allPlayers, warnings };
 };
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
@@ -1143,7 +1170,8 @@ export const runScheduledMatches = async (
     allTeamsData.push(...((batchData || []) as TeamRow[]));
   }
 
-  const rosterData = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
+  const { players: rosterData, warnings: rosterWarnings } = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
+  rosterWarnings.forEach((w) => summary.warnings.push(w));
   const teamsById = new Map<string, TeamRow>(allTeamsData.map((team) => [String(team.id), team]));
   const playersByTeam = new Map<string, EnginePlayer[]>();
   rosterData.forEach((player) => {
@@ -1152,6 +1180,13 @@ export const runScheduledMatches = async (
     curr.push(toEnginePlayer(player));
     playersByTeam.set(teamId, curr);
   });
+
+  const teamsWithoutRoster = teamIds.filter((id) => !playersByTeam.has(id));
+  if (teamsWithoutRoster.length > 0) {
+    summary.warnings.push(
+      `${teamsWithoutRoster.length} equipo(s) sin plantilla en BD (team_ids: ${teamsWithoutRoster.slice(0, 5).join(', ')}${teamsWithoutRoster.length > 5 ? '...' : ''}). Total jugadores cargados: ${rosterData.length}.`
+    );
+  }
 
   const matchesById = new Map<number, MatchRow>(candidateMatches.map((match) => [match.id, match]));
   const preparedByMatchId = new Map<number, PreparedSimulation>();
