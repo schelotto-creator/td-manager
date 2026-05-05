@@ -12,7 +12,10 @@ import {
   getDefaultPositionOverallConfig,
   type PositionOverallConfig
 } from '@/lib/position-overall-config';
-import { ShoppingCart as MarketIcon, DollarSign as CashIcon, ArrowLeft as BackIcon, UserPlus as BuyIcon, Eye, Search, CheckCircle2 } from 'lucide-react';
+import { ShoppingCart as MarketIcon, DollarSign as CashIcon, ArrowLeft as BackIcon, UserPlus as BuyIcon, Eye, Search, CheckCircle2, Gavel, Tag, Clock, RefreshCw, X, AlertTriangle, PackageOpen } from 'lucide-react';
+import { computeMinBid, getTimeRemaining, AUCTION_DURATION_DAYS, type MarketListingWithPlayer } from '@/lib/player-market';
+import { formaToStars, FORMA_STAR_COLORS, FORMA_STAR_LABELS } from '@/lib/player-forma';
+import { isPlayerInjured } from '@/lib/player-injuries';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
@@ -86,9 +89,25 @@ export default function TransferMarket() {
   const [loadingId, setLoadingId] = useState<number | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [positionOverallConfig, setPositionOverallConfig] = useState<PositionOverallConfig>(getDefaultPositionOverallConfig());
-  
-  const [talentoOjo, setTalentoOjo] = useState<number>(0); 
-  const [ojeos, setOjeos] = useState<Record<number, string[]>>({}); 
+
+  const [talentoOjo, setTalentoOjo] = useState<number>(0);
+  const [ojeos, setOjeos] = useState<Record<number, string[]>>({});
+
+  // Auction state
+  type MarketTab = 'free' | 'auctions' | 'my_sales';
+  const [marketTab, setMarketTab] = useState<MarketTab>('free');
+  const [auctions, setAuctions] = useState<MarketListingWithPlayer[]>([]);
+  const [myListings, setMyListings] = useState<MarketListingWithPlayer[]>([]);
+  const [sellableRoster, setSellableRoster] = useState<Player[]>([]);
+  const [bidListing, setBidListing] = useState<MarketListingWithPlayer | null>(null);
+  const [bidAmount, setBidAmount] = useState('');
+  const [bidLoading, setBidLoading] = useState(false);
+  const [bidError, setBidError] = useState<string | null>(null);
+  const [listModal, setListModal] = useState(false);
+  const [listPlayer, setListPlayer] = useState<Player | null>(null);
+  const [listPrice, setListPrice] = useState('');
+  const [listLoading, setListLoading] = useState(false);
+  const [listError, setListError] = useState<string | null>(null); 
 
   const calculateRealOverall = (player: Player, config: PositionOverallConfig = positionOverallConfig) => {
       const baseOverall = calculateWeightedOverallForBestRole(player, config);
@@ -160,11 +179,112 @@ export default function TransferMarket() {
     } else {
       setFreeAgents([]);
     }
+
+    // Load auctions
+    if (teamData) {
+      const { data: allListings } = await supabase
+        .from('market_listings')
+        .select(`
+          *,
+          player:players(id, name, age, position, nationality, shooting_3pt, shooting_2pt,
+            defense, rebounding, passing, dribbling, speed, stamina, experience, forma, injured_until),
+          seller:clubes!market_listings_seller_team_id_fkey(nombre),
+          buyer:clubes!market_listings_buyer_team_id_fkey(nombre)
+        `)
+        .eq('status', 'active')
+        .order('ends_at', { ascending: true });
+
+      const enriched = ((allListings ?? []) as any[]).map((row) => ({
+        ...row,
+        seller_name: row.seller?.nombre ?? 'Desconocido',
+        buyer_name: row.buyer?.nombre ?? null
+      })) as MarketListingWithPlayer[];
+
+      setAuctions(enriched.filter((l) => l.seller_team_id !== teamData.id));
+      setMyListings(enriched.filter((l) => l.seller_team_id === teamData.id));
+
+      const listedIds = new Set(enriched.map((l) => l.player_id));
+      const { data: roster } = await supabase.from('players').select('*').eq('team_id', teamData.id);
+      setSellableRoster(
+        ((roster ?? []) as any[])
+          .filter((p: any) => !listedIds.has(p.id))
+          .map((p: any) => ({
+            ...p,
+            position: getBestRoleForPlayer(p, dynamicPositionConfig),
+            overall: calculateRealOverall(p, dynamicPositionConfig)
+          }))
+      );
+    }
   }, [router]);
 
   useEffect(() => {
     loadMarketData();
   }, [loadMarketData]);
+
+  const showMsg = (msg: string) => {
+    setMessage(msg);
+    setTimeout(() => setMessage(null), 3000);
+  };
+
+  const fmt = (n: number) => new Intl.NumberFormat('es-ES').format(n);
+
+  const openBid = (listing: MarketListingWithPlayer) => {
+    setBidListing(listing);
+    setBidAmount(String(computeMinBid(listing.current_price)));
+    setBidError(null);
+  };
+
+  const getAuthHeader = async (): Promise<Record<string, string>> => {
+    const { data: { session } } = await supabase.auth.getSession();
+    return session?.access_token ? { 'Authorization': `Bearer ${session.access_token}` } : {};
+  };
+
+  const submitBid = async () => {
+    if (!bidListing) return;
+    setBidLoading(true);
+    setBidError(null);
+    try {
+      const amount = Number(String(bidAmount).replace(/\D/g, ''));
+      const authHeader = await getAuthHeader();
+      const res = await fetch('/api/market/bid', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ listingId: bidListing.id, amount })
+      });
+      const json = await res.json();
+      if (!res.ok) { setBidError(json.error); return; }
+      if (myTeam) setMyTeam({ ...myTeam, cash: json.newBudget });
+      setBidListing(null);
+      showMsg('✅ Puja registrada');
+      loadMarketData();
+    } finally {
+      setBidLoading(false);
+    }
+  };
+
+  const submitList = async () => {
+    if (!listPlayer) return;
+    setListLoading(true);
+    setListError(null);
+    try {
+      const price = Number(String(listPrice).replace(/\D/g, ''));
+      const authHeader = await getAuthHeader();
+      const res = await fetch('/api/market/list', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ playerId: listPlayer.id, startingPrice: price })
+      });
+      const json = await res.json();
+      if (!res.ok) { setListError(json.error); return; }
+      setListModal(false);
+      setListPlayer(null);
+      setListPrice('');
+      showMsg(`✅ ${listPlayer.name} publicado en subastas`);
+      loadMarketData();
+    } finally {
+      setListLoading(false);
+    }
+  };
 
   const registerExpenseTx = async (params: {
     teamId: string;
@@ -422,7 +542,209 @@ export default function TransferMarket() {
         </div>
       )}
 
-      <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 relative z-10">
+      {/* Tab switcher */}
+      <div className="max-w-6xl mx-auto mb-6 relative z-10">
+        <div className="bg-slate-900/80 border border-white/10 rounded-2xl p-1.5 flex gap-2">
+          <button onClick={() => setMarketTab('free')} className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${marketTab === 'free' ? 'bg-orange-500/20 border border-orange-500/40 text-orange-300' : 'text-slate-400 hover:text-white'}`}>
+            Agentes Libres ({freeAgents.length})
+          </button>
+          <button onClick={() => setMarketTab('auctions')} className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${marketTab === 'auctions' ? 'bg-primary/20 border border-primary/40 text-primary' : 'text-slate-400 hover:text-white'}`}>
+            Subastas ({auctions.length})
+          </button>
+          <button onClick={() => setMarketTab('my_sales')} className={`flex-1 py-2.5 rounded-xl text-xs font-black uppercase tracking-widest transition-all ${marketTab === 'my_sales' ? 'bg-purple-500/20 border border-purple-500/40 text-purple-300' : 'text-slate-400 hover:text-white'}`}>
+            Mis Ventas ({myListings.length})
+          </button>
+        </div>
+        {(marketTab === 'auctions' || marketTab === 'my_sales') && (
+          <div className="flex justify-end mt-2">
+            <button onClick={() => { setListModal(true); setListError(null); }} className="bg-primary hover:bg-primary/80 text-white font-black text-xs uppercase tracking-widest px-4 py-2 rounded-xl flex items-center gap-2 transition-colors">
+              <Tag size={13} /> Poner jugador en venta
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Auctions tab */}
+      {marketTab === 'auctions' && (
+        <div className="max-w-6xl mx-auto relative z-10">
+          {auctions.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-600">
+              <PackageOpen size={48} className="mb-4 opacity-40" />
+              <p className="font-bold text-lg">No hay subastas activas</p>
+              <p className="text-sm mt-1">Otros entrenadores aún no han puesto jugadores en venta</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {auctions.map((listing) => {
+                const p = listing.player;
+                const isHighestBidder = listing.buyer_team_id === myTeam?.id;
+                const { expired } = getTimeRemaining(listing.ends_at);
+                const minBid = computeMinBid(listing.current_price);
+                const stars = formaToStars(p.forma);
+                return (
+                  <div key={listing.id} className={`bg-slate-900 border rounded-2xl p-4 flex flex-col gap-3 ${isHighestBidder ? 'border-green-500/40' : 'border-slate-800'}`}>
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-white text-sm">{p.name}</span>
+                          {isPlayerInjured(p.injured_until) && (
+                            <span className="inline-flex items-center gap-0.5 text-[8px] font-black bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded"><AlertTriangle size={8}/> LES.</span>
+                          )}
+                        </div>
+                        <div className="flex items-center gap-2 mt-0.5 flex-wrap">
+                          <span className="text-[9px] bg-slate-800 text-slate-400 uppercase font-black tracking-widest px-1.5 py-0.5 rounded">{p.position}</span>
+                          <span className="text-[9px] text-slate-500">{p.age}a</span>
+                          <span className={`text-[9px] font-black ${FORMA_STAR_COLORS[stars]}`}>{'★'.repeat(stars)} {FORMA_STAR_LABELS[stars]}</span>
+                        </div>
+                      </div>
+                      <span className={`inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest px-2 py-0.5 rounded-full border shrink-0 ${expired ? 'text-slate-500 border-slate-700' : 'text-amber-400 border-amber-500/30 bg-amber-500/10'}`}>
+                        <Clock size={9} /> {getTimeRemaining(listing.ends_at).label}
+                      </span>
+                    </div>
+                    <div className="flex gap-1.5 flex-wrap">
+                      {[['T3', p.shooting_3pt], ['T2', p.shooting_2pt], ['Def', p.defense], ['Reb', p.rebounding], ['Pas', p.passing], ['Bot', p.dribbling], ['Vel', p.speed]].map(([l, v]) => (
+                        <div key={String(l)} className="flex flex-col items-center bg-slate-950 rounded-lg px-2 py-1 min-w-[36px]">
+                          <span className="text-[7px] uppercase text-slate-500 font-black">{l}</span>
+                          <span className="text-xs font-bold text-white">{v}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-white/5">
+                      <div>
+                        <div className="text-[9px] text-slate-500 uppercase font-black">Puja actual</div>
+                        <div className="text-base font-mono font-bold text-white">{fmt(listing.current_price)} €</div>
+                        <div className="text-[9px] text-slate-500">
+                          {isHighestBidder ? <span className="text-green-400">✅ Vas ganando</span> : listing.buyer_name ? `Líder: ${listing.buyer_name}` : 'Sin pujas'}
+                        </div>
+                        <div className="text-[9px] text-slate-600">Vendedor: {listing.seller_name}</div>
+                      </div>
+                      {!expired && (
+                        <button onClick={() => openBid(listing)} className="bg-primary hover:bg-primary/80 text-white font-black text-xs uppercase tracking-widest px-3 py-2 rounded-xl flex items-center gap-1.5 transition-colors">
+                          <Gavel size={13} /> Pujar
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* My sales tab */}
+      {marketTab === 'my_sales' && (
+        <div className="max-w-6xl mx-auto relative z-10">
+          {myListings.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 text-slate-600">
+              <Gavel size={48} className="mb-4 opacity-40" />
+              <p className="font-bold text-lg">No tienes jugadores en subasta</p>
+              <button onClick={() => { setListModal(true); setListError(null); }} className="mt-4 text-primary text-sm font-bold hover:underline">Publicar jugador →</button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {myListings.map((listing) => {
+                const p = listing.player;
+                const { label } = getTimeRemaining(listing.ends_at);
+                const stars = formaToStars(p.forma);
+                return (
+                  <div key={listing.id} className="bg-slate-900 border border-purple-500/30 rounded-2xl p-4 flex flex-col gap-3">
+                    <div className="flex items-start justify-between gap-2">
+                      <div>
+                        <span className="font-bold text-white text-sm">{p.name}</span>
+                        <div className="flex items-center gap-2 mt-0.5">
+                          <span className="text-[9px] bg-slate-800 text-slate-400 uppercase font-black tracking-widest px-1.5 py-0.5 rounded">{p.position}</span>
+                          <span className="text-[9px] text-slate-500">{p.age}a</span>
+                          <span className={`text-[9px] font-black ${FORMA_STAR_COLORS[stars]}`}>{'★'.repeat(stars)}</span>
+                        </div>
+                      </div>
+                      <span className="text-[9px] text-amber-400 font-black flex items-center gap-1"><Clock size={9}/>{label}</span>
+                    </div>
+                    <div className="flex items-center justify-between pt-1 border-t border-white/5">
+                      <div>
+                        <div className="text-[9px] text-slate-500 uppercase font-black">Puja actual</div>
+                        <div className="text-base font-mono font-bold text-white">{fmt(listing.current_price)} €</div>
+                        {listing.buyer_name && <div className="text-[9px] text-green-400 font-bold">Mejor puja: {listing.buyer_name}</div>}
+                      </div>
+                      <div className="text-[9px] text-slate-500 font-bold text-right">
+                        {listing.buyer_team_id ? 'Con pujas' : 'Sin pujas aún'}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* BID MODAL */}
+      {bidListing && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-md p-6 shadow-2xl">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-black text-white flex items-center gap-2"><Gavel size={20} className="text-primary"/> Realizar puja</h2>
+              <button onClick={() => setBidListing(null)} className="text-slate-400 hover:text-white"><X size={20}/></button>
+            </div>
+            <div className="bg-slate-950 rounded-2xl p-4 mb-4 space-y-1.5 text-xs">
+              <div className="font-bold text-white text-sm">{bidListing.player.name} · {bidListing.player.position} · {bidListing.player.age}a</div>
+              <div className="flex justify-between"><span className="text-slate-500">Puja actual</span><span className="font-mono font-bold text-white">{fmt(bidListing.current_price)} €</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Puja mínima</span><span className="font-mono font-bold text-amber-400">{fmt(computeMinBid(bidListing.current_price))} €</span></div>
+              <div className="flex justify-between"><span className="text-slate-500">Tu presupuesto</span><span className="font-mono font-bold text-emerald-400">{fmt(myTeam?.cash ?? 0)} €</span></div>
+            </div>
+            <label className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Tu puja (€)</label>
+            <input type="number" value={bidAmount} onChange={(e) => setBidAmount(e.target.value)} min={computeMinBid(bidListing.current_price)}
+              className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white font-mono text-lg focus:outline-none focus:border-primary mb-3" />
+            {bidError && <p className="text-red-400 text-sm mb-3">{bidError}</p>}
+            <button onClick={submitBid} disabled={bidLoading} className="w-full bg-primary hover:bg-primary/80 disabled:opacity-50 text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl transition-colors">
+              {bidLoading ? 'Enviando...' : `Pujar ${bidAmount ? fmt(Number(bidAmount)) : '—'} €`}
+            </button>
+            <p className="text-[9px] text-slate-500 mt-2 text-center">La puja se reserva de tu presupuesto. Si te superan, recibes el reembolso.</p>
+          </div>
+        </div>
+      )}
+
+      {/* LIST PLAYER MODAL */}
+      {listModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-white/10 rounded-3xl w-full max-w-lg p-6 shadow-2xl flex flex-col max-h-[90vh]">
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-black text-white flex items-center gap-2"><Tag size={20} className="text-primary"/> Poner en subasta</h2>
+              <button onClick={() => setListModal(false)} className="text-slate-400 hover:text-white"><X size={20}/></button>
+            </div>
+            <div className="overflow-y-auto flex-1 space-y-2 mb-4 pr-1">
+              {sellableRoster.length === 0
+                ? <p className="text-slate-500 text-sm text-center py-8">No tienes jugadores disponibles</p>
+                : sellableRoster.map((p) => (
+                  <button key={p.id} onClick={() => setListPlayer(listPlayer?.id === p.id ? null : p)}
+                    className={`w-full flex items-center gap-3 p-3 rounded-xl border text-left transition-all ${listPlayer?.id === p.id ? 'bg-primary/10 border-primary/50' : 'bg-slate-950 border-slate-800 hover:border-slate-600'}`}>
+                    <div className="text-2xl">🏀</div>
+                    <div className="flex-1 min-w-0">
+                      <div className="font-bold text-white text-sm truncate">{p.name}</div>
+                      <div className="text-[9px] text-slate-400">{p.position} · {p.age}a · Stamina {p.stamina}%</div>
+                    </div>
+                  </button>
+                ))
+              }
+            </div>
+            {listPlayer && (
+              <div className="border-t border-white/10 pt-4">
+                <label className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Precio de salida (€)</label>
+                <input type="number" value={listPrice} onChange={(e) => setListPrice(e.target.value)} placeholder="Ej: 500000"
+                  className="w-full bg-slate-950 border border-slate-700 rounded-xl px-4 py-3 text-white font-mono text-lg focus:outline-none focus:border-primary mb-3" />
+                {listError && <p className="text-red-400 text-sm mb-3">{listError}</p>}
+                <button onClick={submitList} disabled={listLoading || !listPrice}
+                  className="w-full bg-primary hover:bg-primary/80 disabled:opacity-50 text-white font-black text-sm uppercase tracking-widest py-3 rounded-xl transition-colors">
+                  {listLoading ? 'Publicando...' : `Publicar ${listPlayer.name} · ${AUCTION_DURATION_DAYS} días`}
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* FREE AGENTS grid — only shown on free tab */}
+      {marketTab === 'free' && <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 relative z-10">
         {freeAgents.map(player => {
             const missingStats = getMissingStats(player.id);
             const isFullyScouted = missingStats.length === 0;
@@ -545,7 +867,7 @@ export default function TransferMarket() {
                 </div>
             </div>
         )})}
-      </div>
+      </div>}
     </div>
   );
 }

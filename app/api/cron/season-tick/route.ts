@@ -4,6 +4,7 @@ import { runScheduledMatches } from '@/lib/scheduled-match-runner';
 import { getWeeklySalaryByOvr } from '@/lib/salary';
 import { fetchEconomyRules, getLeagueEconomy, calculateSponsorshipAndFansIncome } from '@/lib/economy-balance';
 import { runWeeklyMaintenanceFallback } from '@/lib/weekly-maintenance-fallback';
+import { closeExpiredAuctions } from '@/lib/player-market';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -218,13 +219,21 @@ const runTick = async (request: NextRequest) => {
        weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }
 
-    const scheduledMatches = await runScheduledMatches(supabaseAdmin, { now, maxMatches });
+    const [scheduledMatches, marketClose] = await Promise.all([
+      runScheduledMatches(supabaseAdmin, { now, maxMatches }),
+      closeExpiredAuctions(supabaseAdmin).catch((err) => ({ closed: 0, errors: [toErrorText(err)] }))
+    ]);
+
+    if (marketClose.errors.length > 0) {
+      warnings.push(...marketClose.errors.map((e) => `Mercado: ${e}`));
+    }
 
     return NextResponse.json({
       ok: true,
       timestamp: now.toISOString(),
       weeklyMaintenance,
       scheduledMatches,
+      marketClose,
       warnings
     });
   } catch (error) {
