@@ -13,10 +13,11 @@ import {
 } from '@/lib/position-overall-config';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { 
-  Users, ChevronLeft, Search, X, 
-  Target, Shield, Zap, Hand, Activity, DollarSign, Brain, UserMinus, HandCoins
+import {
+  Users, ChevronLeft, Search, X,
+  Target, Shield, Zap, Hand, Activity, DollarSign, Brain, UserMinus, HandCoins, AlertTriangle
 } from 'lucide-react';
+import { isPlayerInjured, getInjuryDaysRemaining } from '@/lib/player-injuries';
 import { filterMatchesBySeason, getLatestSeasonNumber, normalizeSeasonNumber } from '@/lib/match-seasons';
 import { formaToStars, FORMA_STAR_LABELS, FORMA_STAR_COLORS } from '@/lib/player-forma';
 
@@ -42,6 +43,7 @@ type Player = {
   stamina: number;
   experience: number;
   forma: number;
+  injured_until?: string | null;
   // Stats de Temporada
   seasonStats?: {
       ppg: number;
@@ -379,7 +381,8 @@ export default function TeamManagement() {
                     forma: Number(p.forma ?? 80),
                     overall: calculateRealOverall(p, dynamicPositionConfig),
                     efficiency: pStats.efficiency,
-                    seasonStats: pStats
+                    seasonStats: pStats,
+                    injured_until: p.injured_until ?? null
                 };
             });
             setPlayers(enriched);
@@ -668,6 +671,11 @@ export default function TeamManagement() {
                                     <td className="px-6 py-4 font-bold text-white text-base flex items-center gap-2">
                                         <span title={player.nationality}>{FLAGS[player.nationality] || '🏳️'}</span>
                                         {player.name}
+                                        {isPlayerInjured(player.injured_until) && (
+                                          <span className="inline-flex items-center gap-1 text-[9px] font-black uppercase tracking-widest bg-red-500/20 text-red-400 border border-red-500/30 px-1.5 py-0.5 rounded">
+                                            <AlertTriangle size={9} /> {getInjuryDaysRemaining(player.injured_until)}d
+                                          </span>
+                                        )}
                                     </td>
                                     <td className="px-6 py-4 text-center text-slate-400">{player.age}</td>
                                     <td className="px-6 py-4 text-center text-slate-400">{player.height} cm</td>
@@ -714,6 +722,12 @@ export default function TeamManagement() {
                 
                 <div className="relative p-6 bg-gradient-to-r from-slate-900 to-black border-b border-white/10 shrink-0">
                     <button onClick={() => setSelectedPlayer(null)} className="absolute top-4 right-4 text-slate-500 hover:text-white transition-colors p-2"><X size={24} /></button>
+                    {isPlayerInjured(selectedPlayer.injured_until) && (
+                      <div className="mb-4 flex items-center gap-2 bg-red-500/10 border border-red-500/30 rounded-xl px-4 py-2.5 text-red-400 text-sm font-bold">
+                        <AlertTriangle size={16} />
+                        Lesionado — baja {getInjuryDaysRemaining(selectedPlayer.injured_until)} días más
+                      </div>
+                    )}
                     <div className="flex items-center gap-6">
                         <div className="w-20 h-20 rounded-xl flex items-center justify-center bg-slate-800/60 border-2 border-slate-700">
                             <span className="text-3xl">🏀</span>

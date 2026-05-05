@@ -21,7 +21,8 @@ import {
   TRAINABLE_ATTRIBUTE_LABELS,
   type TrainableAttribute
 } from '@/lib/player-training';
-import { Dumbbell, HeartPulse, DollarSign, ArrowLeft, CheckCircle2, Calendar, ChevronDown } from 'lucide-react';
+import { Dumbbell, HeartPulse, DollarSign, ArrowLeft, CheckCircle2, Calendar, AlertTriangle } from 'lucide-react';
+import { isPlayerInjured, getInjuryDaysRemaining } from '@/lib/player-injuries';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 
@@ -35,6 +36,7 @@ type Player = {
   salary: number;
   entrenos_semanales: number;
   training_focus: string | null;
+  injured_until?: string | null;
   shooting_3pt: number;
   shooting_2pt: number;
   defense: number;
@@ -141,7 +143,8 @@ export default function TrainingCenter() {
           ...p,
           position: getBestRoleForPlayer(p, dynamicPositionConfig),
           overall: calculateWeightedOverallForBestRole(p, dynamicPositionConfig),
-          training_focus: p.training_focus ?? null
+          training_focus: p.training_focus ?? null,
+          injured_until: p.injured_until ?? null
         }));
         processedPlayers.sort((a: Player, b: Player) => b.overall - a.overall);
 
@@ -163,6 +166,11 @@ export default function TrainingCenter() {
   const setFocus = async (player: Player, attr: TrainableAttribute) => {
     if (!team) return;
 
+    if (isPlayerInjured(player.injured_until)) {
+      setMessage(`❌ ${player.name} está lesionado.`);
+      setTimeout(() => setMessage(null), 2000);
+      return;
+    }
     if (player.entrenos_semanales >= MAX_TRAINS_PER_WEEK) {
       setMessage('❌ Ya se asignó un foco esta semana.');
       setTimeout(() => setMessage(null), 2000);
@@ -319,6 +327,8 @@ export default function TrainingCenter() {
 
       <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-2 gap-6 relative z-10">
         {team.players.map((player) => {
+          const injured = isPlayerInjured(player.injured_until);
+          const injuryDays = getInjuryDaysRemaining(player.injured_until);
           const hasFocused = player.entrenos_semanales >= MAX_TRAINS_PER_WEEK;
           const activeFocus = player.training_focus as TrainableAttribute | null;
           const pendingSelection = selectedFocus[player.id];
@@ -331,9 +341,15 @@ export default function TrainingCenter() {
           return (
             <div
               key={player.id}
-              className={`bg-slate-900 border ${hasFocused ? 'border-purple-500/30 bg-slate-900/50' : 'border-slate-800'} rounded-2xl p-5 flex flex-col sm:flex-row gap-6 relative overflow-hidden shadow-lg transition-all group`}
+              className={`bg-slate-900 border ${injured ? 'border-red-500/30' : hasFocused ? 'border-purple-500/30 bg-slate-900/50' : 'border-slate-800'} rounded-2xl p-5 flex flex-col sm:flex-row gap-6 relative overflow-hidden shadow-lg transition-all group`}
             >
-              {hasFocused && (
+              {injured && (
+                <div className="absolute top-0 right-0 p-2 bg-red-500/20 text-red-400 rounded-bl-xl border-l border-b border-red-500/30 z-20 flex items-center gap-1">
+                  <AlertTriangle size={12} />
+                  <span className="text-[9px] font-black uppercase">{injuryDays}d</span>
+                </div>
+              )}
+              {!injured && hasFocused && (
                 <div className="absolute top-0 right-0 p-2 bg-purple-500/20 text-purple-400 rounded-bl-xl border-l border-b border-purple-500/30 z-20">
                   <CheckCircle2 size={16} />
                 </div>
@@ -372,7 +388,17 @@ export default function TrainingCenter() {
 
               {/* Right column — focus selector */}
               <div className="flex-1 flex flex-col gap-3 justify-center">
-                {hasFocused ? (
+                {injured ? (
+                  <div className="flex flex-col items-center justify-center h-full gap-3 py-4">
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-2xl px-6 py-4 text-center w-full">
+                      <div className="flex items-center justify-center gap-2 text-red-400 font-black text-sm mb-1">
+                        <AlertTriangle size={16} /> LESIONADO
+                      </div>
+                      <div className="text-slate-400 text-xs">Baja {injuryDays} días más</div>
+                      <div className="text-[9px] text-slate-500 mt-2">No puede entrenar hasta recuperarse</div>
+                    </div>
+                  </div>
+                ) : hasFocused ? (
                   <div className="flex flex-col items-center justify-center h-full gap-3 py-4">
                     <div className="bg-purple-500/10 border border-purple-500/30 rounded-2xl px-6 py-4 text-center w-full">
                       <div className="text-[9px] uppercase tracking-widest text-purple-400 font-black mb-1">Foco semanal</div>

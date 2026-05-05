@@ -17,6 +17,7 @@ import {
 } from '@/lib/competition-progression';
 import { computeMatchDateFromJornada, hasMissingSeasonColumn } from '@/lib/match-seasons';
 import { applyFridayTraining, fetchTrainingConfig, isMadridFriday } from '@/lib/player-training';
+import { applyMatchInjuries } from '@/lib/player-injuries';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -812,11 +813,12 @@ const finalizeMatchPersistence = async (
     let warning = 'RPC no disponible, se usó cierre legacy.';
 
     try {
-      const [progressionWarning, formaWarning] = await Promise.all([
+      const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
         applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
-        applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
+        applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText),
+        applyMatchInjuries(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
       ]);
-      warning = [warning, progressionWarning, formaWarning].filter(Boolean).join(' ').trim();
+      warning = [warning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim();
     } catch (postError) {
       warning = `${warning} ${toErrorText(postError)}`.trim();
     }
@@ -843,13 +845,14 @@ const finalizeMatchPersistence = async (
   }
 
   try {
-    const [progressionWarning, formaWarning] = await Promise.all([
+    const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
       applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
-      applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
+      applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText),
+      applyMatchInjuries(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
     ]);
     return {
       status: 'ok',
-      warning: [warning, standingsWarning, progressionWarning, formaWarning].filter(Boolean).join(' ').trim() || null
+      warning: [warning, standingsWarning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim() || null
     };
   } catch (postError) {
     return {

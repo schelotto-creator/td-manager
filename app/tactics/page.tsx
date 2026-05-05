@@ -19,6 +19,7 @@ import {
 } from 'lucide-react';
 import Link from 'next/link';
 import { formaToStars, FORMA_STAR_COLORS, FORMA_STAR_LABELS } from '@/lib/player-forma';
+import { isPlayerInjured, getInjuryDaysRemaining } from '@/lib/player-injuries';
 
 // --- TIPOS ---
 type Player = {
@@ -28,7 +29,8 @@ type Player = {
   lineup_pos: string;
   overall: number;
   stamina: number;
-  forma: number; // NUEVO: La forma del jugador (1-100)
+  forma: number;
+  injured_until?: string | null;
   shooting_3pt: number;
   defense: number;
   passing: number;
@@ -113,7 +115,8 @@ function TacticsBoardContent() {
             ...p,
             position: getBestRoleForPlayer(p, dynamicPositionConfig),
             forma: p.forma || 80,
-            overall: calculateWeightedOverallForBestRole(p, dynamicPositionConfig)
+            overall: calculateWeightedOverallForBestRole(p, dynamicPositionConfig),
+            injured_until: p.injured_until ?? null
         })) || [];
 
         let loadedOffense = myClub.tactic_offense || 'BALANCED';
@@ -452,9 +455,13 @@ function TacticsBoardContent() {
                           <div className="flex-1 min-w-0 pl-1">
                               <div className="text-[10px] font-black text-cyan-400 uppercase tracking-widest mb-0.5 flex justify-between items-center">
                                   {pos.name}
-                                  {isOutOfPosition && (
-                                    <span title="Fuera de posición natural">
+                                  {isPlayerInjured(player.injured_until) ? (
+                                    <span title={`Lesionado ${getInjuryDaysRemaining(player.injured_until)} días`}>
                                       <AlertTriangle size={10} className="text-red-500 animate-pulse" />
+                                    </span>
+                                  ) : isOutOfPosition && (
+                                    <span title="Fuera de posición natural">
+                                      <AlertTriangle size={10} className="text-orange-400 animate-pulse" />
                                     </span>
                                   )}
                               </div>
@@ -537,7 +544,10 @@ function TacticsBoardContent() {
                             <div className="flex-1 min-w-0 pl-1">
                                 <div className="font-bold text-sm text-slate-200 truncate group-hover:text-white transition-colors flex items-center gap-1.5">
                                   <span className="truncate">{player.name}</span>
-                                  {renderFormStars(player.forma)}
+                                  {isPlayerInjured(player.injured_until)
+                                    ? <span className="inline-flex items-center gap-0.5 text-[8px] font-black bg-red-500/20 text-red-400 border border-red-500/30 px-1 py-0.5 rounded shrink-0"><AlertTriangle size={8}/>{getInjuryDaysRemaining(player.injured_until)}d</span>
+                                    : renderFormStars(player.forma)
+                                  }
                                 </div>
                                 <div className="flex justify-between items-center mt-1">
                                     <span className="text-[9px] bg-slate-800 text-slate-400 uppercase font-black tracking-widest px-1.5 py-0.5 rounded">{player.position}</span>
