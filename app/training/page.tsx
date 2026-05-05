@@ -341,8 +341,8 @@ export default function TrainingCenter() {
 
               {/* Left column */}
               <div className="flex flex-col items-center sm:items-start min-w-[140px]">
-                <div className={`w-16 h-16 rounded-full flex items-center justify-center text-xl font-bold mb-2 border-4 bg-slate-950 ${player.overall >= 80 ? 'border-green-400 text-green-400' : 'border-slate-600 text-slate-300'}`}>
-                  {player.overall}
+                <div className="w-16 h-16 rounded-full flex items-center justify-center text-2xl mb-2 border-4 border-slate-700 bg-slate-950">
+                  🏀
                 </div>
                 <h3 className="font-bold text-white text-center sm:text-left leading-tight truncate w-full group-hover:text-purple-400 transition-colors">{player.name}</h3>
                 <div className="flex gap-2 mt-1 mb-4">

@@ -643,7 +643,6 @@ export default function TeamManagement() {
                             <th className="px-6 py-4 cursor-pointer hover:text-white text-center" onClick={() => handleSort('age')}>Edad</th>
                             <th className="px-6 py-4 cursor-pointer hover:text-white text-center" onClick={() => handleSort('height')}>Alt</th>
                             <th className="px-6 py-4 cursor-pointer hover:text-purple-400 text-center" onClick={() => handleSort('experience')}>EXP</th>
-                            <th className="px-6 py-4 cursor-pointer hover:text-primary text-center" onClick={() => handleSort('overall')}>Media</th>
                             <th className="px-6 py-4 cursor-pointer hover:text-yellow-400 text-center" onClick={() => handleSort('efficiency')}>VAL</th>
                             <th className="px-6 py-4 text-center text-emerald-400">Salario (Sem)</th>
                             <th className="px-6 py-4 cursor-pointer hover:text-green-400 text-center" onClick={() => handleSort('stamina')}>Físico</th>
@@ -653,7 +652,7 @@ export default function TeamManagement() {
                     </thead>
                     <tbody className="divide-y divide-white/5">
                         {filteredPlayers.length === 0 ? (
-                            <tr><td colSpan={10} className="px-6 py-12 text-center text-slate-500">No se encontraron jugadores.</td></tr>
+                            <tr><td colSpan={9} className="px-6 py-12 text-center text-slate-500">No se encontraron jugadores.</td></tr>
                         ) : (
                             filteredPlayers.map((player) => (
                                 <tr 
@@ -673,13 +672,6 @@ export default function TeamManagement() {
                                     <td className="px-6 py-4 text-center text-slate-400">{player.age}</td>
                                     <td className="px-6 py-4 text-center text-slate-400">{player.height} cm</td>
                                     <td className="px-6 py-4 text-center text-purple-400 font-bold font-mono">{player.experience}</td>
-                                    <td className="px-6 py-4 text-center">
-                                        <span className={`inline-block w-8 py-0.5 rounded text-xs font-bold ${
-                                            player.overall >= 85 ? 'bg-primary/20 text-primary border border-primary/50' : 
-                                            player.overall >= 70 ? 'bg-green-500/20 text-green-400 border border-green-500/30' : 
-                                            'bg-slate-700 text-slate-300'
-                                        }`}>{player.overall}</span>
-                                    </td>
                                     <td className="px-6 py-4 text-center">
                                         <span className={`font-mono font-bold ${player.efficiency >= 15 ? 'text-yellow-400' : player.efficiency > 0 ? 'text-white' : 'text-slate-600'}`}>
                                             {player.efficiency > 0 ? player.efficiency.toFixed(1) : '-'}
@@ -723,11 +715,9 @@ export default function TeamManagement() {
                 <div className="relative p-6 bg-gradient-to-r from-slate-900 to-black border-b border-white/10 shrink-0">
                     <button onClick={() => setSelectedPlayer(null)} className="absolute top-4 right-4 text-slate-500 hover:text-white transition-colors p-2"><X size={24} /></button>
                     <div className="flex items-center gap-6">
-                        <div className={`w-20 h-20 rounded-xl flex items-center justify-center text-3xl font-display font-bold border-2 ${
-                            selectedPlayer.overall >= 80 ? 'bg-green-500/10 border-green-500 text-green-400' : 
-                            selectedPlayer.overall >= 70 ? 'bg-blue-500/10 border-blue-500 text-blue-400' : 
-                            'bg-slate-700/50 border-slate-600 text-slate-400'
-                        }`}>{selectedPlayer.overall}</div>
+                        <div className="w-20 h-20 rounded-xl flex items-center justify-center bg-slate-800/60 border-2 border-slate-700">
+                            <span className="text-3xl">🏀</span>
+                        </div>
                         <div>
                             <h2 className="text-3xl font-bold text-white mb-1 flex items-center gap-2">
                                 <span title={selectedPlayer.nationality}>{FLAGS[selectedPlayer.nationality] || '🏳️'}</span>

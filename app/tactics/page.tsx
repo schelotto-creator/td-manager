@@ -521,8 +521,6 @@ function TacticsBoardContent() {
               <div className="flex-1 overflow-y-auto p-3 space-y-2 custom-scrollbar bg-slate-900/50">
                 {bench.map(player => {
                     const estStamina = getEstimatedStamina(player.id);
-                    // Muestra el rating afectado por la forma
-                    const roleRating = calculateRoleRating(player, player.position);
                     const assignedQuarters = getAssignedQuarters(player.id);
                     
                     return (
@@ -532,13 +530,8 @@ function TacticsBoardContent() {
                           onDragStart={(e) => handleDragStart(e, player.id)} 
                           className="bg-slate-950 hover:bg-slate-800 border border-slate-800 hover:border-cyan-500/50 p-2.5 rounded-xl flex items-center gap-3 cursor-grab group transition-all"
                         >
-                            <div className="relative shrink-0">
-                                <div className={`w-8 h-8 rounded flex items-center justify-center font-black text-xs border ${getOverallColor(roleRating)} shadow-sm`}>
-                                    {roleRating}
-                                </div>
-                                <div className="absolute -bottom-1 -right-1 bg-slate-900 rounded-full p-0.5 border border-slate-700" title={getFormLabel(player.forma)}>
-                                    {renderFormIcon(player.forma)}
-                                </div>
+                            <div className="shrink-0 w-8 h-8 rounded flex items-center justify-center text-base bg-slate-900 border border-slate-700" title={getFormLabel(player.forma)}>
+                                {renderFormIcon(player.forma)}
                             </div>
 
                             <div className="flex-1 min-w-0 pl-1">
