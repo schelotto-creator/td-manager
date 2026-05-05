@@ -18,6 +18,7 @@ import {
 import { computeMatchDateFromJornada, hasMissingSeasonColumn } from '@/lib/match-seasons';
 import { applyFridayTraining, fetchTrainingConfig, isMadridFriday } from '@/lib/player-training';
 import { applyMatchInjuries } from '@/lib/player-injuries';
+import { insertActivity } from '@/lib/activity-feed';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1362,6 +1363,30 @@ export const runScheduledMatches = async (
         summary.alreadyPlayed += 1;
       } else {
         summary.finalized += 1;
+
+        const homeWon = prepared.finalHome > prepared.finalAway;
+        const homeTeam = teamsById.get(String(match.home_team_id));
+        const awayTeam = teamsById.get(String(match.away_team_id));
+        await insertActivity(supabaseAdmin, [
+          {
+            team_id: match.home_team_id,
+            type: homeWon ? 'match_win' : 'match_loss',
+            title: homeWon
+              ? `Victoria vs ${awayTeam?.nombre ?? 'Rival'}`
+              : `Derrota ante ${awayTeam?.nombre ?? 'Rival'}`,
+            body: `${prepared.finalHome}–${prepared.finalAway} (J${match.jornada})`,
+            href: `/match?matchId=${match.id}`
+          },
+          {
+            team_id: match.away_team_id,
+            type: homeWon ? 'match_loss' : 'match_win',
+            title: homeWon
+              ? `Derrota ante ${homeTeam?.nombre ?? 'Rival'}`
+              : `Victoria vs ${homeTeam?.nombre ?? 'Rival'}`,
+            body: `${prepared.finalAway}–${prepared.finalHome} (J${match.jornada})`,
+            href: `/match?matchId=${match.id}`
+          }
+        ]).catch(() => {});
       }
 
       if (supportsPreparedSimulationColumns) {

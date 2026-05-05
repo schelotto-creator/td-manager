@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { insertActivity } from '@/lib/activity-feed';
 
 export const computeInjuryChance = (stamina: number): number => {
   let chance = 0.05;
@@ -29,15 +30,15 @@ export const applyMatchInjuries = async (
 
   const { data: players, error } = await supabaseAdmin
     .from('players')
-    .select('id, stamina, injured_until')
+    .select('id, name, stamina, injured_until, team_id')
     .in('team_id', [homeTeamId, awayTeamId]);
 
   if (error || !players || players.length === 0) return null;
 
   const now = new Date();
-  const toInject: Array<{ id: number; injured_until: string }> = [];
+  const toInject: Array<{ id: number; injured_until: string; name: string; teamId: string; daysOut: number }> = [];
 
-  for (const p of players as { id: number; stamina: number | null; injured_until: string | null }[]) {
+  for (const p of players as { id: number; name: string; stamina: number | null; injured_until: string | null; team_id: string }[]) {
     if (!playedIds.has(p.id)) continue;
     if (isPlayerInjured(p.injured_until)) continue;
 
@@ -47,7 +48,7 @@ export const applyMatchInjuries = async (
 
     const daysOut = 7 + Math.floor(Math.random() * 15); // 7–21 days
     const until = new Date(now.getTime() + daysOut * 24 * 60 * 60 * 1000);
-    toInject.push({ id: p.id, injured_until: until.toISOString().split('T')[0] });
+    toInject.push({ id: p.id, injured_until: until.toISOString().split('T')[0], name: p.name, teamId: p.team_id, daysOut });
   }
 
   if (toInject.length === 0) return null;
@@ -59,6 +60,15 @@ export const applyMatchInjuries = async (
   );
 
   const errorCount = updates.filter((r) => r.error).length;
+
+  await insertActivity(supabaseAdmin, toInject.map(({ teamId, name, daysOut }) => ({
+    team_id: teamId,
+    type: 'injury' as const,
+    title: `Lesión: ${name}`,
+    body: `Baja estimada: ${daysOut} días`,
+    href: '/roster'
+  }))).catch(() => {});
+
   if (errorCount > 0) return `${errorCount} lesiones no pudieron registrarse.`;
   return `🚑 ${toInject.length} jugador(es) lesionado(s) tras el partido.`;
 };

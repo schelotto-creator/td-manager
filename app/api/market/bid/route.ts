@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { computeMinBid } from '@/lib/player-market';
+import { insertActivity } from '@/lib/activity-feed';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,6 +73,24 @@ export async function POST(request: NextRequest) {
       .eq('id', listingId);
 
     if (updateError) throw updateError;
+
+    // Notify outbid team
+    if (listing.buyer_team_id && listing.buyer_team_id !== club.id) {
+      const { data: playerData } = await supabaseAdmin
+        .from('players')
+        .select('name')
+        .eq('id', listing.player_id)
+        .maybeSingle();
+      const playerName = (playerData as any)?.name ?? `Jugador #${listing.player_id}`;
+      const fmt = new Intl.NumberFormat('es-ES');
+      await insertActivity(supabaseAdmin, [{
+        team_id: listing.buyer_team_id,
+        type: 'market_outbid' as const,
+        title: `Superado en subasta: ${playerName}`,
+        body: `Nueva puja: ${fmt.format(amount)} €`,
+        href: '/market'
+      }]).catch(() => {});
+    }
 
     return NextResponse.json({ ok: true, newBudget });
   } catch (err: any) {

@@ -7,6 +7,7 @@ import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, 
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
 import { normalizeSeasonNumber } from '@/lib/match-seasons';
+import { fetchActivityFeed, ACTIVITY_META, formatRelativeTime, type ActivityEvent } from '@/lib/activity-feed';
 
 type Manager = {
   nombre: string;
@@ -70,6 +71,7 @@ export default function Dashboard() {
   const [leagueName, setLeagueName] = useState<string>('Liga en curso');
   const [nextMatch, setNextMatch] = useState<NextMatch | null>(null);
   const [inboxItems, setInboxItems] = useState<InboxItem[]>([]);
+  const [activityFeed, setActivityFeed] = useState<ActivityEvent[]>([]);
   const [seasonStats, setSeasonStats] = useState<{ pj: number; v: number; d: number; pts: number }>({ pj: 0, v: 0, d: 0, pts: 0 });
   const [leaguePosition, setLeaguePosition] = useState<{ pos: number; total: number } | null>(null);
 
@@ -183,8 +185,8 @@ export default function Dashboard() {
           });
         }
 
-        // Build inbox items in parallel
-        const [lastMatchRes, playersRes] = await Promise.all([
+        // Build inbox items and activity feed in parallel
+        const [lastMatchRes, playersRes, feedData] = await Promise.all([
           supabase
             .from('matches')
             .select('id,jornada,season_number,home_team_id,away_team_id,home_score,away_score')
@@ -196,8 +198,11 @@ export default function Dashboard() {
           supabase
             .from('players')
             .select('id,name,stamina,entrenos_semanales')
-            .eq('team_id', String(clubData.id))
+            .eq('team_id', String(clubData.id)),
+          fetchActivityFeed(supabase, clubData.id, 10)
         ]);
+
+        setActivityFeed(feedData);
 
         const inbox: InboxItem[] = [];
 

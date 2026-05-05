@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { insertActivity } from '@/lib/activity-feed';
 
 export type TrainingConfig = {
   baseGain: number;
@@ -105,7 +106,7 @@ export const applyFridayTraining = async (
 
   const { data: players, error } = await supabaseAdmin
     .from('players')
-    .select('id, age, training_focus, shooting_3pt, shooting_2pt, defense, rebounding, passing, dribbling, speed')
+    .select('id, age, team_id, training_focus, shooting_3pt, shooting_2pt, defense, rebounding, passing, dribbling, speed')
     .not('training_focus', 'is', null);
 
   if (error || !players) {
@@ -114,6 +115,7 @@ export const applyFridayTraining = async (
 
   let updated = 0;
   let errors = 0;
+  const teamTrainingMap = new Map<string, number>();
 
   await Promise.all(
     (players as any[]).map(async (p) => {
@@ -140,6 +142,10 @@ export const applyFridayTraining = async (
       } else {
         updated++;
         log.push(`✅ Player ${p.id}: ${attr} ${currentValue} → ${newValue}`);
+        if (p.team_id) {
+          const teamId = String(p.team_id);
+          teamTrainingMap.set(teamId, (teamTrainingMap.get(teamId) ?? 0) + 1);
+        }
       }
     })
   );
@@ -151,6 +157,16 @@ export const applyFridayTraining = async (
 
   if (resetError) {
     log.push(`⚠️ Error resetting entrenos_semanales for unfocused players: ${resetError.message}`);
+  }
+
+  if (teamTrainingMap.size > 0) {
+    await insertActivity(supabaseAdmin, [...teamTrainingMap.entries()].map(([team_id, count]) => ({
+      team_id,
+      type: 'training' as const,
+      title: 'Entrenamiento semanal',
+      body: `${count} jugador${count > 1 ? 'es' : ''} mejorado${count > 1 ? 's' : ''} esta semana`,
+      href: '/training'
+    }))).catch(() => {});
   }
 
   return { updated, errors, log };

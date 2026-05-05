@@ -1,4 +1,5 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
+import { insertActivity } from '@/lib/activity-feed';
 
 export const AUCTION_DURATION_DAYS = 3;
 export const MIN_BID_INCREMENT_ABS = 10_000;
@@ -101,6 +102,13 @@ export const closeExpiredAuctions = async (
   for (const listing of expired as MarketListing[]) {
     try {
       if (listing.buyer_team_id) {
+        const { data: playerData } = await supabaseAdmin
+          .from('players')
+          .select('name')
+          .eq('id', listing.player_id)
+          .maybeSingle();
+        const playerName = (playerData as any)?.name ?? `Jugador #${listing.player_id}`;
+
         // Transfer player to winner
         const { error: playerError } = await supabaseAdmin
           .from('players')
@@ -133,6 +141,25 @@ export const closeExpiredAuctions = async (
           .from('market_listings')
           .update({ status: 'sold' })
           .eq('id', listing.id);
+
+        const fmt = new Intl.NumberFormat('es-ES');
+        const priceStr = `${fmt.format(listing.current_price)} €`;
+        await insertActivity(supabaseAdmin, [
+          {
+            team_id: listing.buyer_team_id,
+            type: 'market_won' as const,
+            title: `Subasta ganada: ${playerName}`,
+            body: `Fichado por ${priceStr}`,
+            href: '/roster'
+          },
+          {
+            team_id: listing.seller_team_id,
+            type: 'market_sold' as const,
+            title: `Jugador vendido: ${playerName}`,
+            body: `Venta por ${priceStr}`,
+            href: '/finance'
+          }
+        ]).catch(() => {});
       } else {
         // No bids — listing expires, player stays with seller
         await supabaseAdmin
