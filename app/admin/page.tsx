@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch } from 'lucide-react';
+import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch, Dumbbell } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NAMES_DB } from '@/lib/names-db';
@@ -43,6 +43,13 @@ import {
   getLatestSeasonNumber,
   getNextSeasonNumber
 } from '@/lib/match-seasons';
+import {
+  DEFAULT_TRAINING_CONFIG,
+  fetchTrainingConfig,
+  getAgeMultiplier,
+  computeTrainingDelta,
+  type TrainingConfig
+} from '@/lib/player-training';
 
 // --- MASIVE DATA GENERATION LISTS (10x Bigger) ---
 const CIUDADES = [
@@ -77,7 +84,7 @@ type AdminEconomyRule = {
   trainingCostMultiplier: number;
 };
 
-type AdminSection = 'users' | 'operations';
+type AdminSection = 'users' | 'operations' | 'training';
 
 const LEAGUE_LEVEL_LABELS: Record<number, string> = {
   1: 'Bronce',
@@ -239,6 +246,9 @@ export default function AdminDashboard() {
   const [activeSection, setActiveSection] = useState<AdminSection>('users');
   const [pendingDraftClubs, setPendingDraftClubs] = useState<{ id: number; nombre: string }[]>([]);
   const [forcingDraftClubId, setForcingDraftClubId] = useState<number | null>(null);
+  const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG);
+  const [trainingConfigLoading, setTrainingConfigLoading] = useState(false);
+  const [trainingConfigSaving, setTrainingConfigSaving] = useState(false);
 
   useEffect(() => {
     const verifyAdmin = async () => {
@@ -255,6 +265,7 @@ export default function AdminDashboard() {
             loadSimulatorSettings();
             loadPositionOverallConfig();
             loadGitHubConfig();
+            loadTrainingConfig();
         } else {
             router.push('/');
         }
@@ -558,6 +569,42 @@ export default function AdminDashboard() {
     } finally {
       setGithubLoading(false);
     }
+  };
+
+  const loadTrainingConfig = async () => {
+    setTrainingConfigLoading(true);
+    try {
+      const config = await fetchTrainingConfig(supabase);
+      setTrainingConfig(config);
+    } catch (err: any) {
+      addLog(`❌ Error cargando config de entrenamiento: ${err?.message || 'fallo desconocido'}`);
+    } finally {
+      setTrainingConfigLoading(false);
+    }
+  };
+
+  const saveTrainingConfig = async () => {
+    if (trainingConfigSaving) return;
+    setTrainingConfigSaving(true);
+    try {
+      const { error } = await supabase
+        .from('training_config')
+        .upsert({ id: 1, settings: trainingConfig }, { onConflict: 'id' });
+      if (error) throw error;
+      addLog('🏋️ Configuración de entrenamiento guardada.');
+    } catch (err: any) {
+      addLog(`❌ Error guardando config de entrenamiento: ${err?.message || 'fallo desconocido'}`);
+    } finally {
+      setTrainingConfigSaving(false);
+    }
+  };
+
+  const updateTrainingConfig = (field: keyof Omit<TrainingConfig, 'ageMultipliers'>, value: number) => {
+    setTrainingConfig((prev) => ({ ...prev, [field]: value }));
+  };
+
+  const updateAgeMultiplier = (key: keyof TrainingConfig['ageMultipliers'], value: number) => {
+    setTrainingConfig((prev) => ({ ...prev, ageMultipliers: { ...prev.ageMultipliers, [key]: value } }));
   };
 
   const updateGitHubConfigField = (field: 'owner' | 'repo' | 'branch', rawValue: string) => {
@@ -1257,7 +1304,7 @@ export default function AdminDashboard() {
       </div>
 
       <div className="max-w-7xl mx-auto mb-8">
-        <div className="bg-slate-900/80 border border-white/10 rounded-2xl p-2 grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="bg-slate-900/80 border border-white/10 rounded-2xl p-2 grid grid-cols-1 sm:grid-cols-3 gap-2">
           <button
             onClick={() => setActiveSection('users')}
             className={`px-4 py-3 rounded-xl border text-left transition-all ${
@@ -1288,6 +1335,22 @@ export default function AdminDashboard() {
             </div>
             <p className="text-[10px] uppercase tracking-widest mt-1 opacity-80">
               Universo, draft, calendario, economía y logs
+            </p>
+          </button>
+          <button
+            onClick={() => setActiveSection('training')}
+            className={`px-4 py-3 rounded-xl border text-left transition-all ${
+              activeSection === 'training'
+                ? 'bg-purple-500/15 border-purple-400/50 text-purple-300'
+                : 'bg-slate-950/60 border-white/10 text-slate-400 hover:text-white hover:border-white/20'
+            }`}
+          >
+            <div className="flex items-center gap-2 text-sm font-black uppercase tracking-widest">
+              <Dumbbell size={16} />
+              Entrenamiento
+            </div>
+            <p className="text-[10px] uppercase tracking-widest mt-1 opacity-80">
+              Config del sistema de mejora semanal
             </p>
           </button>
         </div>
@@ -1898,6 +1961,120 @@ export default function AdminDashboard() {
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {activeSection === 'training' && (
+        <div className="max-w-3xl mx-auto space-y-6">
+          <div className="bg-slate-900 border border-purple-500/30 rounded-3xl p-6 shadow-xl">
+            <div className="flex items-center justify-between mb-6">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 bg-purple-500/20 text-purple-400 rounded-xl flex items-center justify-center">
+                  <Dumbbell size={20} />
+                </div>
+                <div>
+                  <h2 className="font-black uppercase tracking-wide text-white">Configuración de Entrenamiento</h2>
+                  <p className="text-[10px] uppercase tracking-widest text-slate-500">Parámetros del sistema de mejora semanal (viernes)</p>
+                </div>
+              </div>
+              <button onClick={loadTrainingConfig} disabled={trainingConfigLoading} className="text-[10px] text-slate-400 hover:text-white flex items-center gap-1 uppercase tracking-widest font-black">
+                <RefreshCcw size={12} className={trainingConfigLoading ? 'animate-spin' : ''} /> Recargar
+              </button>
+            </div>
+
+            <div className="space-y-6">
+              {/* Base params */}
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Ganancia base (baseGain)</label>
+                  <input
+                    type="number" step="0.05" min="0.1" max="5"
+                    value={trainingConfig.baseGain}
+                    onChange={(e) => updateTrainingConfig('baseGain', Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-purple-500"
+                  />
+                  <p className="text-[9px] text-slate-500 mt-1">Multiplicador base. 0.8 ≈ ritmo Hattrick.</p>
+                </div>
+                <div>
+                  <label className="block text-[10px] uppercase font-black tracking-widest text-slate-400 mb-1">Divisor DR (drDivisor)</label>
+                  <input
+                    type="number" step="1" min="10" max="200"
+                    value={trainingConfig.drDivisor}
+                    onChange={(e) => updateTrainingConfig('drDivisor', Number(e.target.value))}
+                    className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-purple-500"
+                  />
+                  <p className="text-[9px] text-slate-500 mt-1">Mayor valor = más lento. 50 = rendimientos decrecientes moderados.</p>
+                </div>
+              </div>
+
+              {/* Age multipliers */}
+              <div>
+                <h3 className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-3">Multiplicadores por edad</h3>
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+                  {([ ['u22', '< 22 años'], ['u26', '22–25'], ['u30', '26–29'], ['u34', '30–33'], ['v34', '34+'] ] as const).map(([key, label]) => (
+                    <div key={key}>
+                      <label className="block text-[9px] uppercase font-black tracking-widest text-slate-500 mb-1">{label}</label>
+                      <input
+                        type="number" step="0.01" min="0" max="2"
+                        value={trainingConfig.ageMultipliers[key]}
+                        onChange={(e) => updateAgeMultiplier(key, Number(e.target.value))}
+                        className="w-full bg-slate-950 border border-slate-700 rounded-xl px-3 py-2 text-white font-mono text-sm focus:outline-none focus:border-purple-500"
+                      />
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Preview calculator */}
+              <div className="bg-slate-950 border border-slate-800 rounded-2xl p-4">
+                <h3 className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-3">Simulador de mejora</h3>
+                <div className="grid grid-cols-3 gap-3 text-xs font-mono">
+                  {([
+                    { age: 20, label: 'Joven (20 años)' },
+                    { age: 25, label: 'Prime (25 años)' },
+                    { age: 30, label: 'Veterano (30 años)' }
+                  ] as const).map(({ age, label }) => (
+                    <div key={age} className="space-y-1">
+                      <div className="text-[9px] uppercase text-slate-500 font-black">{label}</div>
+                      {[40, 60, 75, 85].map((val) => {
+                        const delta = computeTrainingDelta(val, age, trainingConfig);
+                        const weeks = delta > 0 ? Math.ceil((85 - val) / delta) : '∞';
+                        return (
+                          <div key={val} className="flex justify-between text-slate-300">
+                            <span className="text-slate-500">{val}→</span>
+                            <span className="text-green-400">+{delta.toFixed(2)}/sem</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <button
+                onClick={saveTrainingConfig}
+                disabled={trainingConfigSaving}
+                className="w-full bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white font-black text-xs uppercase tracking-widest py-3 rounded-xl transition-colors flex items-center justify-center gap-2"
+              >
+                {trainingConfigSaving ? <Activity size={14} className="animate-spin" /> : <Dumbbell size={14} />}
+                {trainingConfigSaving ? 'Guardando...' : 'Guardar configuración'}
+              </button>
+            </div>
+          </div>
+
+          {/* Migration SQL hint */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+            <h3 className="text-[10px] uppercase font-black tracking-widest text-slate-400 mb-3 flex items-center gap-2">
+              <Terminal size={12} /> SQL requerido (si no existe la tabla)
+            </h3>
+            <pre className="text-[10px] text-green-400 font-mono bg-slate-950 rounded-xl p-4 overflow-x-auto whitespace-pre-wrap">{`CREATE TABLE IF NOT EXISTS training_config (
+  id INT PRIMARY KEY DEFAULT 1,
+  settings JSONB NOT NULL
+);
+
+ALTER TABLE players
+  ADD COLUMN IF NOT EXISTS training_focus TEXT;`}</pre>
           </div>
         </div>
       )}

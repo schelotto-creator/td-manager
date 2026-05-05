@@ -16,6 +16,7 @@ import {
   maybeFinalizeSeasonRollover
 } from '@/lib/competition-progression';
 import { computeMatchDateFromJornada, hasMissingSeasonColumn } from '@/lib/match-seasons';
+import { applyFridayTraining, fetchTrainingConfig, isMadridFriday } from '@/lib/player-training';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1038,6 +1039,20 @@ export const runScheduledMatches = async (
     }
   } catch (rolloverError) {
     preflightWarnings.push(`No se pudo revisar el cierre de temporada: ${toErrorText(rolloverError)}`);
+  }
+
+  if (isMadridFriday(now)) {
+    try {
+      const trainingConfig = await fetchTrainingConfig(supabaseAdmin);
+      const trainingResult = await applyFridayTraining(supabaseAdmin, trainingConfig);
+      if (trainingResult.updated > 0 || trainingResult.errors > 0) {
+        preflightWarnings.push(
+          `Entrenamientos viernes: ${trainingResult.updated} actualizados, ${trainingResult.errors} errores.`
+        );
+      }
+    } catch (trainingError) {
+      preflightWarnings.push(`No se pudo aplicar entrenamientos del viernes: ${toErrorText(trainingError)}`);
+    }
   }
 
   const { count: totalDueWithoutLimit, error: totalDueError } = await supabaseAdmin
