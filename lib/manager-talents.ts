@@ -129,6 +129,28 @@ export const awardMatchXp = async (
   ]);
 };
 
+/** Award season-completion XP to every manager at once. */
+export const awardSeasonXpToAll = async (supabase: SupabaseClient): Promise<void> => {
+  const { data: managers } = await supabase
+    .from('managers')
+    .select('id, nivel, xp, xp_siguiente, puntos_talento');
+
+  if (!managers || managers.length === 0) return;
+
+  await Promise.all(
+    (managers as any[]).map((m) => {
+      const updated = applyXpGain(
+        Number(m.xp ?? 0),
+        Number(m.nivel ?? 1),
+        Number(m.xp_siguiente ?? xpForNextLevel(Number(m.nivel ?? 1))),
+        Number(m.puntos_talento ?? 0),
+        XP_SEASON_COMPLETE
+      );
+      return supabase.from('managers').update(updated).eq('id', m.id);
+    })
+  );
+};
+
 /** Fetch all teams' manager talents in 2 queries. Returns Map<teamId, ManagerTalents>. */
 export const fetchAllManagerTalents = async (
   supabase: SupabaseClient
