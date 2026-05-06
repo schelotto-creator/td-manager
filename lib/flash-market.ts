@@ -21,6 +21,14 @@ export type FlashOpportunity = {
     overall: number;
     age: number;
     nationality: string;
+    speed: number;
+    stamina: number;
+    shooting_3pt: number;
+    shooting_2pt: number;
+    dribbling: number;
+    defense: number;
+    rebounding: number;
+    passing: number;
   } | null;
   claimed_by_team?: { nombre: string } | null;
 };
@@ -36,7 +44,7 @@ export const fetchActiveFlashOpportunity = async (
     .from('flash_opportunities')
     .select(`
       *,
-      player:players(id, name, position, overall, age, nationality),
+      player:players(id, name, position, overall, age, nationality, speed, stamina, shooting_3pt, shooting_2pt, dribbling, defense, rebounding, passing),
       claimed_by_team:clubes!flash_opportunities_claimed_by_team_id_fkey(nombre)
     `)
     .gt('expires_at', now)
