@@ -7,7 +7,7 @@ import {
 } from 'lucide-react';
 
 type EscudoForma = 'classic' | 'modern' | 'circle' | 'hexagon' | 'square';
-type TalentKey = 'talento_ojo' | 'talento_lobo' | 'talento_idolo';
+type TalentKey = 'talento_ojo' | 'talento_financiero' | 'talento_mentor' | 'talento_staff' | 'talento_idolo';
 
 type ManagerData = {
   id: number;
@@ -21,7 +21,9 @@ type ManagerData = {
   derrotas?: number;
   titulos?: number;
   talento_ojo?: number;
-  talento_lobo?: number;
+  talento_financiero?: number;
+  talento_mentor?: number;
+  talento_staff?: number;
   talento_idolo?: number;
   [key: string]: string | number | null | undefined;
 };
@@ -57,6 +59,7 @@ type TalentConfig = {
   foco: string;
   max: number;
   accent: string;
+  perks: [string, string, string];
 };
 
 // --- COMPONENTE ESCUDO INCRUSTADO ---
@@ -249,28 +252,71 @@ const TALENTS: TalentConfig[] = [
     key: 'talento_ojo',
     icono: '👁️',
     titulo: 'Ojo Clínico',
-    desc: 'Te permite evaluar mejor a los jugadores y tomar decisiones de mercado con más seguridad.',
+    desc: 'Evalúa el talento de los agentes libres sin necesidad de pagar ojeos.',
     foco: 'Scouting y fichajes',
     max: 3,
-    accent: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300'
+    accent: 'border-cyan-500/30 bg-cyan-500/10 text-cyan-300',
+    perks: [
+      '2 stats de cada agente visible sin ojear',
+      '4 stats visibles + rangos más precisos en el resto',
+      'Todos los stats de agentes libres visibles sin ojear'
+    ]
   },
   {
-    key: 'talento_lobo',
-    icono: '💼',
-    titulo: 'Lobo de Wall Street',
-    desc: 'Mejora tu capacidad de generar valor económico en las operaciones del club.',
+    key: 'talento_financiero',
+    icono: '💰',
+    titulo: 'Financiero',
+    desc: 'Maximiza el valor de tus ventas en el mercado de traspasos.',
     foco: 'Economía del club',
-    max: 5,
-    accent: 'border-amber-500/30 bg-amber-500/10 text-amber-300'
+    max: 3,
+    accent: 'border-amber-500/30 bg-amber-500/10 text-amber-300',
+    perks: [
+      '+5% sobre el precio final de tus subastas',
+      '+10% sobre el precio final de tus subastas',
+      '+15% sobre el precio final de tus subastas'
+    ]
+  },
+  {
+    key: 'talento_mentor',
+    icono: '🎓',
+    titulo: 'Mentor',
+    desc: 'Tu experiencia acelera el desarrollo de los jugadores en los entrenamientos semanales.',
+    foco: 'Entrenamiento',
+    max: 3,
+    accent: 'border-purple-500/30 bg-purple-500/10 text-purple-300',
+    perks: [
+      '+15% de ganancia por sesión de entrenamiento',
+      '+30% de ganancia por sesión de entrenamiento',
+      '+50% de ganancia por sesión de entrenamiento'
+    ]
+  },
+  {
+    key: 'talento_staff',
+    icono: '🏥',
+    titulo: 'Staff Médico',
+    desc: 'Un cuerpo técnico de élite que minimiza el impacto de las lesiones en el vestuario.',
+    foco: 'Condición física',
+    max: 3,
+    accent: 'border-red-500/30 bg-red-500/10 text-red-300',
+    perks: [
+      '-10% de probabilidad de lesión post-partido',
+      '-25% probabilidad de lesión y 3 días menos de baja',
+      '-40% probabilidad de lesión y 5 días menos de baja'
+    ]
   },
   {
     key: 'talento_idolo',
     icono: '🏟️',
     titulo: 'Ídolo Local',
-    desc: 'Aumenta tu impacto en la moral y la conexión entre afición y vestuario.',
-    foco: 'Moral y entorno',
+    desc: 'Tu conexión con la afición impulsa los ingresos semanales del club.',
+    foco: 'Ingresos y moral',
     max: 3,
-    accent: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300'
+    accent: 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300',
+    perks: [
+      '+5% en ingresos semanales (taquilla y patrocinadores)',
+      '+10% en ingresos semanales (taquilla y patrocinadores)',
+      '+15% en ingresos semanales (taquilla y patrocinadores)'
+    ]
   }
 ];
 
@@ -528,6 +574,7 @@ export default function ManagerPage() {
                  max={talent.max}
                  ptos={puntosTalento}
                  accent={talent.accent}
+                 perks={talent.perks}
                  onUpgrade={() => handleUpgradeTalent(talent.key)}
                />
              ))}
@@ -666,6 +713,7 @@ type TalentCardProps = {
   max: number;
   ptos: number;
   accent: string;
+  perks: [string, string, string];
   onUpgrade: () => void;
 };
 
@@ -705,7 +753,7 @@ function QuickLink({ href, title, subtitle }: QuickLinkProps) {
   );
 }
 
-function TalentCard({ icono, titulo, desc, foco, nivel, max, ptos, accent, onUpgrade }: TalentCardProps) {
+function TalentCard({ icono, titulo, desc, foco, nivel, max, ptos, accent, perks, onUpgrade }: TalentCardProps) {
   const isMaxed = nivel >= max;
   const canUpgrade = ptos > 0 && !isMaxed;
   const progress = Math.round((nivel / Math.max(1, max)) * 100);
@@ -714,18 +762,38 @@ function TalentCard({ icono, titulo, desc, foco, nivel, max, ptos, accent, onUpg
       <div className="flex items-start gap-4">
         <div className={`w-14 h-14 rounded-xl border flex items-center justify-center text-2xl shrink-0 shadow-inner ${accent}`}>{icono}</div>
         <div className="flex-1 min-w-0">
-          <div className="flex flex-wrap justify-between items-center gap-2 mb-2">
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-1">
             <h4 className="text-sm font-black uppercase text-white tracking-wide">{titulo}</h4>
             <span className="text-[10px] font-black uppercase tracking-widest text-slate-400">Nivel {nivel}/{max}</span>
           </div>
-          <p className="text-[11px] text-slate-300 leading-relaxed">{desc}</p>
-          <div className="mt-3 space-y-1">
-            <div className="h-2 rounded-full bg-slate-950 border border-white/10 overflow-hidden">
-              <div className={`h-full rounded-full ${isMaxed ? 'bg-emerald-400' : 'bg-cyan-400'}`} style={{ width: `${progress}%` }}></div>
+          <p className="text-[11px] text-slate-400 leading-relaxed mb-3">{desc}</p>
+
+          <ul className="space-y-1 mb-3">
+            {perks.map((perk, i) => {
+              const lvl = i + 1;
+              const unlocked = nivel >= lvl;
+              const isNext = lvl === nivel + 1;
+              return (
+                <li key={i} className={`flex items-start gap-2 text-[11px] leading-snug ${unlocked ? 'text-white' : isNext ? 'text-slate-400' : 'text-slate-600'}`}>
+                  <span className="shrink-0 mt-0.5">
+                    {unlocked ? '✓' : isNext ? '○' : '·'}
+                  </span>
+                  <span>
+                    <span className={`font-black mr-1 ${unlocked ? 'text-slate-300' : 'text-slate-600'}`}>Nv{lvl}</span>
+                    {perk}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+
+          <div className="space-y-1">
+            <div className="h-1.5 rounded-full bg-slate-950 border border-white/10 overflow-hidden">
+              <div className={`h-full rounded-full transition-all duration-500 ${isMaxed ? 'bg-emerald-400' : 'bg-cyan-400'}`} style={{ width: `${progress}%` }}></div>
             </div>
-            <div className="flex justify-between text-[10px] uppercase tracking-widest font-bold text-slate-500">
+            <div className="flex justify-between text-[10px] uppercase tracking-widest font-bold text-slate-600">
               <span>{foco}</span>
-              <span>{isMaxed ? 'Talento al máximo' : 'Coste: 1 punto'}</span>
+              <span>{isMaxed ? 'Máximo alcanzado' : 'Coste: 1 punto'}</span>
             </div>
           </div>
         </div>

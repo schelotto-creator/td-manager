@@ -5,6 +5,7 @@ import { getWeeklySalaryByOvr } from '@/lib/salary';
 import { fetchEconomyRules, getLeagueEconomy, calculateSponsorshipAndFansIncome } from '@/lib/economy-balance';
 import { runWeeklyMaintenanceFallback } from '@/lib/weekly-maintenance-fallback';
 import { closeExpiredAuctions } from '@/lib/player-market';
+import { getIncomeBonus } from '@/lib/manager-talents';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -53,17 +54,21 @@ const runWeeklyFinanceUpdate = async (supabase: any) => {
   
   try {
     // 1. Obtener reglas económicas y datos necesarios
-    const [economyRules, clubsRes, playersRes, leaguesRes] = await Promise.all([
+    const [economyRules, clubsRes, playersRes, leaguesRes, managersRes] = await Promise.all([
       fetchEconomyRules(supabase),
-      supabase.from('clubes').select('id, league_id, presupuesto, fan_mood'),
+      supabase.from('clubes').select('id, league_id, presupuesto, fan_mood, owner_id'),
       supabase.from('players').select('team_id, overall'),
-      supabase.from('ligas').select('id, nivel')
+      supabase.from('ligas').select('id, nivel'),
+      supabase.from('managers').select('owner_id, talento_idolo')
     ]);
 
     if (clubsRes.error) throw clubsRes.error;
     const clubs = clubsRes.data || [];
     const players = playersRes.data || [];
     const leagues = leaguesRes.data || [];
+    const managerByOwner = new Map(
+      ((managersRes.data ?? []) as any[]).map((m) => [m.owner_id, Number(m.talento_idolo ?? 0)])
+    );
 
     // Mapas para acceso rápido
     const playersByTeam: Record<string, any[]> = {};
@@ -98,9 +103,11 @@ const runWeeklyFinanceUpdate = async (supabase: any) => {
         // Gastos
         maintenance = economy.venueMaintenance;
         
-        // Ingresos
-        incomeSponsors = calculateSponsorshipAndFansIncome(level, club.fan_mood || 50, economyRules);
-        incomeTickets = economy.ticketRevenueBase;
+        // Ingresos (con bonus de talento_idolo)
+        const idoloLevel = managerByOwner.get(club.owner_id) ?? 0;
+        const incomeMultiplier = 1 + getIncomeBonus(idoloLevel);
+        incomeSponsors = Math.round(calculateSponsorshipAndFansIncome(level, club.fan_mood || 50, economyRules) * incomeMultiplier);
+        incomeTickets = Math.round(economy.ticketRevenueBase * incomeMultiplier);
       }
 
       const totalExpenses = totalSalarios + maintenance;

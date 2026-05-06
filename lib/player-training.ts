@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
+import { fetchAllManagerTalents, getTrainingMultiplier, DEFAULT_TALENTS } from '@/lib/manager-talents';
 
 export type TrainingConfig = {
   baseGain: number;
@@ -104,6 +105,8 @@ export const applyFridayTraining = async (
   const resolvedConfig = config ?? DEFAULT_TRAINING_CONFIG;
   const log: string[] = [];
 
+  const talentMap = await fetchAllManagerTalents(supabaseAdmin).catch(() => new Map<string, typeof DEFAULT_TALENTS>());
+
   const { data: players, error } = await supabaseAdmin
     .from('players')
     .select('id, age, team_id, training_focus, shooting_3pt, shooting_2pt, defense, rebounding, passing, dribbling, speed')
@@ -124,7 +127,8 @@ export const applyFridayTraining = async (
 
       const currentValue = Number(p[attr] ?? 50);
       const age = Number(p.age ?? 25);
-      const delta = computeTrainingDelta(currentValue, age, resolvedConfig);
+      const mentorLevel = talentMap.get(String(p.team_id))?.talento_mentor ?? 0;
+      const delta = computeTrainingDelta(currentValue, age, resolvedConfig) * getTrainingMultiplier(mentorLevel);
       const newValue = Math.min(99, Math.round((currentValue + delta) * 10) / 10);
 
       const { error: updateError } = await supabaseAdmin

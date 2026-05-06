@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
+import { getInjuryChanceMultiplier, getInjuryDurationReduction } from '@/lib/manager-talents';
 
 export const computeInjuryChance = (stamina: number): number => {
   let chance = 0.05;
@@ -35,6 +36,20 @@ export const applyMatchInjuries = async (
 
   if (error || !players || players.length === 0) return null;
 
+  // Fetch staff talent for both teams (2 queries)
+  const { data: clubs } = await supabaseAdmin
+    .from('clubes')
+    .select('id, owner_id')
+    .in('id', [homeTeamId, awayTeamId]);
+  const ownerIds = ((clubs ?? []) as any[]).map((c) => c.owner_id).filter(Boolean);
+  const { data: managers } = ownerIds.length > 0
+    ? await supabaseAdmin.from('managers').select('owner_id, talento_staff').in('owner_id', ownerIds)
+    : { data: [] };
+  const staffByOwner = new Map(((managers ?? []) as any[]).map((m) => [m.owner_id, Number(m.talento_staff ?? 0)]));
+  const staffByTeam = new Map(
+    ((clubs ?? []) as any[]).map((c) => [String(c.id), staffByOwner.get(c.owner_id) ?? 0])
+  );
+
   const now = new Date();
   const toInject: Array<{ id: number; injured_until: string; name: string; teamId: string; daysOut: number }> = [];
 
@@ -43,10 +58,12 @@ export const applyMatchInjuries = async (
     if (isPlayerInjured(p.injured_until)) continue;
 
     const stamina = Number(p.stamina ?? 100);
-    const chance = computeInjuryChance(stamina);
+    const staffLevel = staffByTeam.get(p.team_id) ?? 0;
+    const chance = computeInjuryChance(stamina) * getInjuryChanceMultiplier(staffLevel);
     if (Math.random() > chance) continue;
 
-    const daysOut = 7 + Math.floor(Math.random() * 15); // 7–21 days
+    const durationReduction = getInjuryDurationReduction(staffLevel);
+    const daysOut = Math.max(1, 7 + Math.floor(Math.random() * 15) - durationReduction);
     const until = new Date(now.getTime() + daysOut * 24 * 60 * 60 * 1000);
     toInject.push({ id: p.id, injured_until: until.toISOString().split('T')[0], name: p.name, teamId: p.team_id, daysOut });
   }

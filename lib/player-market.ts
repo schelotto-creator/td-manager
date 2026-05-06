@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
+import { getSaleBonus } from '@/lib/manager-talents';
 
 export const AUCTION_DURATION_DAYS = 3;
 export const MIN_BID_INCREMENT_ABS = 10_000;
@@ -116,22 +117,28 @@ export const closeExpiredAuctions = async (
           .eq('id', listing.player_id);
         if (playerError) throw playerError;
 
-        // Add sale proceeds to seller
+        // Add sale proceeds to seller (with financiero talent bonus)
         const { data: seller } = await supabaseAdmin
           .from('clubes')
-          .select('presupuesto')
+          .select('presupuesto, owner_id')
           .eq('id', listing.seller_team_id)
           .single();
         if (seller) {
+          const { data: sellerManager } = (seller as any).owner_id
+            ? await supabaseAdmin.from('managers').select('talento_financiero').eq('owner_id', (seller as any).owner_id).maybeSingle()
+            : { data: null };
+          const financeLevel = Number((sellerManager as any)?.talento_financiero ?? 0);
+          const proceeds = Math.round(listing.current_price * (1 + getSaleBonus(financeLevel)));
+
           await supabaseAdmin
             .from('clubes')
-            .update({ presupuesto: seller.presupuesto + listing.current_price })
+            .update({ presupuesto: (seller as any).presupuesto + proceeds })
             .eq('id', listing.seller_team_id);
 
           await supabaseAdmin.from('finance_transactions').insert({
             team_id: listing.seller_team_id,
             concepto: `Venta jugador (mercado) — ID ${listing.player_id}`,
-            monto: listing.current_price,
+            monto: proceeds,
             tipo: 'INGRESO',
             fecha: now
           });

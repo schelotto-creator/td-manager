@@ -19,6 +19,7 @@ import { computeMatchDateFromJornada, hasMissingSeasonColumn } from '@/lib/match
 import { applyFridayTraining, fetchTrainingConfig, isMadridFriday } from '@/lib/player-training';
 import { applyMatchInjuries } from '@/lib/player-injuries';
 import { insertActivity } from '@/lib/activity-feed';
+import { awardMatchXp } from '@/lib/manager-talents';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1367,7 +1368,11 @@ export const runScheduledMatches = async (
         const homeWon = prepared.finalHome > prepared.finalAway;
         const homeTeam = teamsById.get(String(match.home_team_id));
         const awayTeam = teamsById.get(String(match.away_team_id));
-        await insertActivity(supabaseAdmin, [
+        const winnerTeamId = homeWon ? match.home_team_id : match.away_team_id;
+        const loserTeamId = homeWon ? match.away_team_id : match.home_team_id;
+        await Promise.all([
+          awardMatchXp(supabaseAdmin, winnerTeamId, loserTeamId).catch(() => {}),
+          insertActivity(supabaseAdmin, [
           {
             team_id: match.home_team_id,
             type: homeWon ? 'match_win' : 'match_loss',
@@ -1386,7 +1391,8 @@ export const runScheduledMatches = async (
             body: `${prepared.finalAway}–${prepared.finalHome} (J${match.jornada})`,
             href: `/match?matchId=${match.id}`
           }
-        ]).catch(() => {});
+        ]).catch(() => {})
+        ]);
       }
 
       if (supportsPreparedSimulationColumns) {
