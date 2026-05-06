@@ -3,13 +3,14 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info, Flame, Clock } from 'lucide-react';
+import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info, Flame } from 'lucide-react';
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
 import { normalizeSeasonNumber } from '@/lib/match-seasons';
 import { fetchActivityFeed, ACTIVITY_META, formatRelativeTime, type ActivityEvent } from '@/lib/activity-feed';
 import { fetchActiveFlashOpportunity, type FlashOpportunity } from '@/lib/flash-market';
 import { getTimeRemaining } from '@/lib/player-market';
+import { SCOUT_STATS, SCOUT_STAT_LABELS, getStatDisplay, getOverallDisplay } from '@/lib/scouting-display';
 
 type Manager = {
   nombre: string;
@@ -301,46 +302,13 @@ export default function Dashboard() {
     loadDashboard();
   }, [router]);
 
-  const FLASH_STATS = ['speed','stamina','shooting_3pt','shooting_2pt','dribbling','defense','rebounding','passing'] as const;
-  const FLASH_STAT_LABELS: Record<string, string> = { speed:'Ritmo', stamina:'Stamina', shooting_3pt:'T3', shooting_2pt:'T2', dribbling:'Manejo', defense:'DEF', rebounding:'REB', passing:'Pase' };
-
-  const flashGetShuffled = (seed: number) => {
-    const stats = [...FLASH_STATS] as string[];
-    let m = stats.length, t, i, s = seed;
-    while (m) { const x = Math.sin(s++)*10000; i = Math.floor((x-Math.floor(x))*m--); t=stats[m]; stats[m]=stats[i]; stats[i]=t; }
-    return stats;
-  };
-  const flashInterval = (val: number, spread: number, seed: number) => {
-    const x = Math.sin(seed)*10000; const r = x-Math.floor(x);
-    const off = Math.floor(r*(spread+1));
-    return { min: Math.max(1,val-spread+off), max: Math.min(99,val+spread+off) };
-  };
   const renderFlashStat = (player: NonNullable<FlashOpportunity['player']>, statName: string) => {
     const val = (player as any)[statName] as number ?? 50;
-    const scouted = ojeos[String(player.id)]?.includes(statName);
-    if (scouted) return <span className="font-mono font-bold text-[11px] text-green-400">{val}</span>;
-    const shuffled = flashGetShuffled(player.id);
-    const idx = shuffled.indexOf(statName);
-    const seed = player.id + statName.length;
-    if (talentoOjo >= 3) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
-    if (talentoOjo === 2) {
-      if (idx < 4) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
-      if (idx < 7) { const {min,max}=flashInterval(val,4,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
-    }
-    if (talentoOjo === 1) {
-      if (idx < 2) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
-      if (idx < 5) { const {min,max}=flashInterval(val,6,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
-    }
-    if (talentoOjo === 0 && idx < 3) { const {min,max}=flashInterval(val,8,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
+    const d = getStatDisplay(player.id, statName, val, talentoOjo, ojeos);
+    if (d.type === 'scouted') return <span className="font-mono font-bold text-[11px] text-green-400">{d.value}</span>;
+    if (d.type === 'exact')   return <span className="font-mono font-bold text-[11px] text-white">{d.value}</span>;
+    if (d.type === 'range')   return <span className="font-mono font-bold text-[11px] text-orange-400">{d.min}-{d.max}</span>;
     return <span className="font-mono font-bold text-[11px] text-slate-600 animate-pulse">???</span>;
-  };
-  const flashOverall = (player: NonNullable<FlashOpportunity['player']>) => {
-    const shuffled = flashGetShuffled(player.id);
-    const missing = FLASH_STATS.filter(s => !shuffled.slice(0, talentoOjo===3?8:talentoOjo===2?4:talentoOjo===1?2:0).includes(s) && !ojeos[String(player.id)]?.includes(s));
-    if (missing.length === 0) return String(player.overall);
-    const spread = talentoOjo===3?1:talentoOjo===2?2:talentoOjo===1?4:6;
-    const {min,max}=flashInterval(player.overall,spread,player.id);
-    return `${min}-${max}`;
   };
 
   const claimFlash = async () => {
@@ -518,7 +486,7 @@ export default function Dashboard() {
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start gap-4">
                     <div className="h-14 w-14 shrink-0 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col items-center justify-center font-black text-amber-300">
-                      <span className="text-lg leading-none">{flashOverall(flashOpportunity.player)}</span>
+                      <span className="text-lg leading-none">{getOverallDisplay(flashOpportunity.player.id, flashOpportunity.player.overall, talentoOjo, ojeos)}</span>
                       <span className="text-[8px] uppercase tracking-widest text-amber-500/60 mt-0.5">OVR</span>
                     </div>
                     <div>
@@ -532,9 +500,9 @@ export default function Dashboard() {
                     </div>
                   </div>
                   <div className="mt-3 grid grid-cols-4 gap-1.5">
-                    {FLASH_STATS.map(stat => (
+                    {SCOUT_STATS.map(stat => (
                       <div key={stat} className="bg-black/30 rounded-lg px-2 py-1.5 flex flex-col items-center gap-0.5">
-                        <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">{FLASH_STAT_LABELS[stat]}</span>
+                        <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">{SCOUT_STAT_LABELS[stat]}</span>
                         {renderFlashStat(flashOpportunity.player!, stat)}
                       </div>
                     ))}
