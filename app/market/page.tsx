@@ -14,6 +14,7 @@ import {
 } from '@/lib/position-overall-config';
 import { ShoppingCart as MarketIcon, DollarSign as CashIcon, ArrowLeft as BackIcon, UserPlus as BuyIcon, Eye, Search, CheckCircle2, Gavel, Tag, Clock, RefreshCw, X, AlertTriangle, PackageOpen } from 'lucide-react';
 import { computeMinBid, getTimeRemaining, AUCTION_DURATION_DAYS, type MarketListingWithPlayer } from '@/lib/player-market';
+import { getShuffledStats, getStatInterval, getMissingStats, getOverallDisplay, getStatDisplay, SCOUT_STATS } from '@/lib/scouting-display';
 import { formaToStars, FORMA_STAR_COLORS, FORMA_STAR_LABELS } from '@/lib/player-forma';
 import { isPlayerInjured } from '@/lib/player-injuries';
 import Link from 'next/link';
@@ -45,7 +46,7 @@ type Team = {
   cash: number;
 };
 
-const ALL_STATS = ['speed', 'stamina', 'shooting_3pt', 'shooting_2pt', 'dribbling', 'defense', 'rebounding', 'passing'];
+const ALL_STATS = [...SCOUT_STATS];
 const SCOUT_COST = 15000;
 const FLAGS: Record<string, string> = {
   USA: '🇺🇸',
@@ -58,28 +59,6 @@ const FLAGS: Record<string, string> = {
   GER: '🇩🇪'
 };
 
-const getShuffledStats = (seed: number) => {
-    const stats = [...ALL_STATS];
-    let m = stats.length, t, i;
-    let s = seed;
-    while (m) {
-        const x = Math.sin(s++) * 10000;
-        i = Math.floor((x - Math.floor(x)) * m--);
-        t = stats[m];
-        stats[m] = stats[i];
-        stats[i] = t;
-    }
-    return stats;
-}
-
-const getInterval = (val: number, spread: number, seed: number) => {
-    const x = Math.sin(seed) * 10000;
-    const randomFraction = x - Math.floor(x);
-    const offset = Math.floor(randomFraction * (spread + 1)); 
-    const min = Math.max(1, val - spread + offset);
-    const max = Math.min(99, val + spread + offset);
-    return { min, max };
-};
 
 export default function TransferMarket() {
   const router = useRouter();
@@ -405,25 +384,13 @@ export default function TransferMarket() {
     }
   };
 
-  const getMissingStats = (playerId: number) => {
-      const shuffled = getShuffledStats(playerId);
-      let nativelyExact = 0;
-      if (talentoOjo === 1) nativelyExact = 2;
-      if (talentoOjo === 2) nativelyExact = 4;
-      if (talentoOjo === 3) nativelyExact = 8;
-
-      const nativelyExactStats = shuffled.slice(0, nativelyExact);
-      const scoutedStats = ojeos[playerId] || [];
-      const knownStats = [...nativelyExactStats, ...scoutedStats];
-      
-      return ALL_STATS.filter(s => !knownStats.includes(s));
-  };
+  const getMissingStatsForPlayer = (playerId: number) => getMissingStats(playerId, talentoOjo, ojeos);
 
   const handleScoutPlayer = async (playerId: number) => {
     if (!myTeam || !ownerId) return;
     if (myTeam.cash < SCOUT_COST) { alert("❌ Fondos insuficientes."); return; }
     
-    const missing = getMissingStats(playerId);
+    const missing = getMissingStatsForPlayer(playerId);
     if (missing.length === 0) { setMessage('✅ Jugador ya totalmente ojeado'); return; }
 
     setLoadingId(playerId);
@@ -474,55 +441,15 @@ export default function TransferMarket() {
 
   const renderPlayerStat = (player: Player, statName: string) => {
       const val = player[statName as keyof Player] as number || 100;
-      const isScouted = ojeos[player.id]?.includes(statName);
-      
-      if (isScouted) {
-          return <div className="font-mono font-bold text-[10px] text-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.4)] whitespace-nowrap">{val}</div>;
-      }
-
-      const shuffled = getShuffledStats(player.id);
-      const statIndex = shuffled.indexOf(statName);
-      const seed = player.id + statName.length;
-
-      if (talentoOjo === 3) {
-          return <div className="font-mono font-bold text-[10px] text-white whitespace-nowrap">{val}</div>;
-      }
-      if (talentoOjo === 2) {
-          if (statIndex < 4) return <div className="font-mono font-bold text-[10px] text-white whitespace-nowrap">{val}</div>;
-          if (statIndex < 7) {
-              const { min, max } = getInterval(val, 4, seed);
-              return <div className="font-mono font-bold text-[10px] text-orange-400 drop-shadow-[0_0_5px_rgba(251,146,60,0.4)] whitespace-nowrap">{min}-{max}</div>;
-          }
-      }
-      if (talentoOjo === 1) {
-          if (statIndex < 2) return <div className="font-mono font-bold text-[10px] text-white whitespace-nowrap">{val}</div>;
-          if (statIndex < 5) {
-              const { min, max } = getInterval(val, 6, seed);
-              return <div className="font-mono font-bold text-[10px] text-orange-400 drop-shadow-[0_0_5px_rgba(251,146,60,0.4)] whitespace-nowrap">{min}-{max}</div>;
-          }
-      }
-      if (talentoOjo === 0) {
-          if (statIndex < 3) {
-              const { min, max } = getInterval(val, 8, seed);
-              return <div className="font-mono font-bold text-[10px] text-orange-400 drop-shadow-[0_0_5px_rgba(251,146,60,0.4)] whitespace-nowrap">{min}-{max}</div>;
-          }
-      }
-
+      const d = getStatDisplay(player.id, statName, val, talentoOjo, ojeos);
+      if (d.type === 'scouted') return <div className="font-mono font-bold text-[10px] text-green-400 drop-shadow-[0_0_8px_rgba(74,222,128,0.4)] whitespace-nowrap">{d.value}</div>;
+      if (d.type === 'exact') return <div className="font-mono font-bold text-[10px] text-white whitespace-nowrap">{d.value}</div>;
+      if (d.type === 'range') return <div className="font-mono font-bold text-[10px] text-orange-400 drop-shadow-[0_0_5px_rgba(251,146,60,0.4)] whitespace-nowrap">{d.min}-{d.max}</div>;
       return <div className="font-mono font-bold text-[10px] text-slate-600/50 animate-pulse whitespace-nowrap">???</div>;
   };
 
-  const getOverallDisplay = (playerId: number, trueOverall: number) => {
-      const missing = getMissingStats(playerId);
-      if (missing.length === 0) return trueOverall.toString(); 
-      
-      let spread = 6;
-      if (talentoOjo === 1) spread = 4;
-      if (talentoOjo === 2) spread = 2;
-      if (talentoOjo === 3) spread = 1;
-      
-      const { min, max } = getInterval(trueOverall, spread, playerId);
-      return `${min}-${max}`;
-  };
+  const getOverallDisplayForPlayer = (playerId: number, trueOverall: number) =>
+      getOverallDisplay(playerId, trueOverall, talentoOjo, ojeos);
 
   const getSalarioSemanal = (ovr: number) => {
     return getWeeklySalaryByOvr(ovr);
@@ -770,9 +697,9 @@ export default function TransferMarket() {
       {/* FREE AGENTS grid — only shown on free tab */}
       {marketTab === 'free' && <div className="max-w-6xl mx-auto grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8 relative z-10">
         {freeAgents.map(player => {
-            const missingStats = getMissingStats(player.id);
+            const missingStats = getMissingStatsForPlayer(player.id);
             const isFullyScouted = missingStats.length === 0;
-            const displayOvr = getOverallDisplay(player.id, player.overall);
+            const displayOvr = getOverallDisplayForPlayer(player.id, player.overall);
             const isIntervalOvr = displayOvr.includes('-');
             
             return (
