@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from 'react';
 import { supabase } from '@/lib/supabase';
-import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch, Dumbbell } from 'lucide-react';
+import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch, Dumbbell, Flame } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { NAMES_DB } from '@/lib/names-db';
@@ -222,6 +222,7 @@ export default function AdminDashboard() {
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [flashLog, setFlashLog] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stats, setStats] = useState({ players: 0, freeAgents: 0, teams: 0 });
 
@@ -1278,6 +1279,25 @@ export default function AdminDashboard() {
     }
   };
 
+  const generarFlashDeal = async () => {
+    setFlashLog(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('Sin sesión activa');
+      const res = await fetch('/api/admin/flash-market/generate', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error desconocido');
+      const fmt = new Intl.NumberFormat('es-ES');
+      setFlashLog(`✅ ${data.playerName} — ${fmt.format(data.flashPrice)} €`);
+    } catch (err: any) {
+      setFlashLog(`❌ ${err.message}`);
+    }
+  };
+
   if (!isAuthorized) {
       return (
           <div className="min-h-screen bg-slate-950 flex flex-col items-center justify-center font-mono text-cyan-500">
@@ -1562,6 +1582,28 @@ export default function AdminDashboard() {
                 >
                   {isGenerating ? <Activity className="animate-spin" size={16} /> : <Zap size={16} />}
                   {isGenerating ? 'Simulando...' : 'Simular Partidos Pendientes'}
+                </button>
+              </div>
+
+              <div className="bg-slate-900 border border-amber-500/20 p-6 rounded-3xl shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-amber-500/10 text-amber-400 rounded-xl flex items-center justify-center">
+                    <Flame size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-black uppercase text-white tracking-wide">Mercado Flash</h2>
+                    <p className="text-[10px] text-amber-500/70 uppercase tracking-widest">Oportunidad 48h</p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">Publica un agente libre aleatorio (OVR 55-82) con un 35% de descuento visible en el dashboard de todos los managers durante 48h.</p>
+                {flashLog && (
+                  <p className="text-[11px] font-mono mb-3 text-amber-300">{flashLog}</p>
+                )}
+                <button
+                  onClick={generarFlashDeal}
+                  className="w-full py-4 bg-amber-600 hover:bg-amber-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
+                >
+                  <Flame size={16} /> Lanzar Oferta Flash
                 </button>
               </div>
 

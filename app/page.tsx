@@ -3,11 +3,13 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info } from 'lucide-react';
+import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info, Flame, Clock } from 'lucide-react';
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
 import { normalizeSeasonNumber } from '@/lib/match-seasons';
 import { fetchActivityFeed, ACTIVITY_META, formatRelativeTime, type ActivityEvent } from '@/lib/activity-feed';
+import { fetchActiveFlashOpportunity, type FlashOpportunity } from '@/lib/flash-market';
+import { getTimeRemaining } from '@/lib/player-market';
 
 type Manager = {
   nombre: string;
@@ -75,6 +77,9 @@ export default function Dashboard() {
   const [seasonStats, setSeasonStats] = useState<{ pj: number; v: number; d: number; pts: number }>({ pj: 0, v: 0, d: 0, pts: 0 });
   const [leaguePosition, setLeaguePosition] = useState<{ pos: number; total: number } | null>(null);
   const [winStreak, setWinStreak] = useState(0);
+  const [flashOpportunity, setFlashOpportunity] = useState<FlashOpportunity | null>(null);
+  const [claimingFlash, setClaimingFlash] = useState(false);
+  const [flashMessage, setFlashMessage] = useState<string | null>(null);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -203,8 +208,8 @@ export default function Dashboard() {
           });
         }
 
-        // Build inbox items and activity feed in parallel
-        const [lastMatchRes, playersRes, feedData] = await Promise.all([
+        // Build inbox items, activity feed and flash opportunity in parallel
+        const [lastMatchRes, playersRes, feedData, flashData] = await Promise.all([
           supabase
             .from('matches')
             .select('id,jornada,season_number,home_team_id,away_team_id,home_score,away_score')
@@ -217,10 +222,12 @@ export default function Dashboard() {
             .from('players')
             .select('id,name,stamina,entrenos_semanales')
             .eq('team_id', String(clubData.id)),
-          fetchActivityFeed(supabase, clubData.id, 10)
+          fetchActivityFeed(supabase, clubData.id, 10),
+          fetchActiveFlashOpportunity(supabase).catch(() => null)
         ]);
 
         setActivityFeed(feedData);
+        setFlashOpportunity(flashData);
 
         const inbox: InboxItem[] = [];
 
@@ -287,6 +294,29 @@ export default function Dashboard() {
 
     loadDashboard();
   }, [router]);
+
+  const claimFlash = async () => {
+    if (!flashOpportunity || claimingFlash) return;
+    setClaimingFlash(true);
+    setFlashMessage(null);
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) throw new Error('Sin sesión');
+      const res = await fetch('/api/flash-market/claim', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ opportunityId: flashOpportunity.id })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error ?? 'Error desconocido');
+      setFlashOpportunity(null);
+      setFlashMessage('✅ Fichaje completado. Revisa tu plantilla.');
+    } catch (err: any) {
+      setFlashMessage(`❌ ${err.message}`);
+    } finally {
+      setClaimingFlash(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -426,6 +456,38 @@ export default function Dashboard() {
             )}
           </div>
         </header>
+
+        {(flashOpportunity || flashMessage) && (
+          <section className="mb-6 bg-amber-500/10 border border-amber-500/30 rounded-3xl p-5 md:p-6">
+            <div className="flex items-center gap-2 mb-1">
+              <Flame size={16} className="text-amber-400" />
+              <span className="text-amber-300 text-[10px] font-black uppercase tracking-widest">Oportunidad Flash · {flashOpportunity ? getTimeRemaining(flashOpportunity.expires_at).label : ''}</span>
+            </div>
+            {flashMessage ? (
+              <p className="text-sm font-bold text-white mt-2">{flashMessage}</p>
+            ) : flashOpportunity?.player && (
+              <div className="flex flex-col sm:flex-row sm:items-center gap-4 mt-3">
+                <div className="flex-1">
+                  <p className="text-white font-black text-lg leading-tight">{flashOpportunity.player.name}</p>
+                  <p className="text-slate-400 text-xs mt-0.5">{flashOpportunity.player.position} · {flashOpportunity.player.age} años · OVR {flashOpportunity.player.overall}</p>
+                  <div className="flex items-baseline gap-2 mt-2">
+                    <span className="text-amber-300 font-black text-xl font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.flash_price)} €</span>
+                    <span className="text-slate-500 line-through text-sm font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.original_price)} €</span>
+                    <span className="text-green-400 text-xs font-black">−35%</span>
+                  </div>
+                </div>
+                <button
+                  onClick={claimFlash}
+                  disabled={claimingFlash}
+                  className="shrink-0 px-6 py-3 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-black uppercase text-xs tracking-widest rounded-xl transition-all flex items-center gap-2"
+                >
+                  <Flame size={14} />
+                  {claimingFlash ? 'Fichando...' : 'Fichar Ahora'}
+                </button>
+              </div>
+            )}
+          </section>
+        )}
 
         {inboxItems.length > 0 && (
           <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
