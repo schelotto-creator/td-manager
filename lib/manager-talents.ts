@@ -36,9 +36,98 @@ export const getSaleBonus = (level: number): number =>
 export const getIncomeBonus = (level: number): number =>
   ([0, 0.05, 0.10, 0.15] as const)[Math.max(0, Math.min(level, 3))];
 
-export const XP_WIN = 150;
-export const XP_LOSS = 75;
-export const xpForNextLevel = (nivel: number): number => nivel * 500;
+// --- XP system ---
+
+export const XP_WIN = 80;
+export const XP_LOSS = 30;
+export const XP_TRAINING_PER_PLAYER = 5;
+export const XP_SIGNING = 30;
+export const XP_SEASON_COMPLETE = 200;
+
+/** XP needed to advance from `nivel` to `nivel + 1`. Quadratic: nivel² × 400 */
+export const xpForNextLevel = (nivel: number): number => nivel * nivel * 400;
+
+// --- Internal level-up logic (shared by all award functions) ---
+
+const applyXpGain = (
+  currentXp: number,
+  currentNivel: number,
+  currentXpSiguiente: number,
+  currentPuntosTalento: number,
+  xpGain: number
+) => {
+  let xp = currentXp + xpGain;
+  let nivel = currentNivel;
+  let xpSiguiente = currentXpSiguiente;
+  let puntosTalento = currentPuntosTalento;
+
+  while (xp >= xpSiguiente) {
+    xp -= xpSiguiente;
+    nivel++;
+    puntosTalento++;
+    xpSiguiente = xpForNextLevel(nivel);
+  }
+
+  return { xp, nivel, xp_siguiente: xpSiguiente, puntos_talento: puntosTalento };
+};
+
+// --- Public award functions ---
+
+/** Award XP directly to a manager identified by their auth owner_id. */
+export const awardXpToOwner = async (
+  supabase: SupabaseClient,
+  ownerId: string,
+  xpAmount: number
+): Promise<void> => {
+  const { data: manager } = await supabase
+    .from('managers')
+    .select('id, nivel, xp, xp_siguiente, puntos_talento')
+    .eq('owner_id', ownerId)
+    .maybeSingle();
+
+  if (!manager) return;
+
+  const m = manager as any;
+  const updated = applyXpGain(
+    Number(m.xp ?? 0),
+    Number(m.nivel ?? 1),
+    Number(m.xp_siguiente ?? xpForNextLevel(Number(m.nivel ?? 1))),
+    Number(m.puntos_talento ?? 0),
+    xpAmount
+  );
+
+  await supabase.from('managers').update(updated).eq('id', m.id);
+};
+
+/** Award XP to the manager who owns a given team (club). */
+export const awardXpToTeam = async (
+  supabase: SupabaseClient,
+  teamId: string,
+  xpAmount: number
+): Promise<void> => {
+  const { data: club } = await supabase
+    .from('clubes')
+    .select('owner_id')
+    .eq('id', teamId)
+    .maybeSingle();
+
+  const ownerId = (club as any)?.owner_id;
+  if (!ownerId) return;
+
+  return awardXpToOwner(supabase, ownerId, xpAmount);
+};
+
+/** Award match XP to both managers (winner + loser). */
+export const awardMatchXp = async (
+  supabase: SupabaseClient,
+  winnerTeamId: string,
+  loserTeamId: string
+): Promise<void> => {
+  await Promise.all([
+    awardXpToTeam(supabase, winnerTeamId, XP_WIN),
+    awardXpToTeam(supabase, loserTeamId, XP_LOSS),
+  ]);
+};
 
 /** Fetch all teams' manager talents in 2 queries. Returns Map<teamId, ManagerTalents>. */
 export const fetchAllManagerTalents = async (
@@ -73,56 +162,4 @@ export const fetchAllManagerTalents = async (
   }
 
   return result;
-};
-
-/**
- * Award match XP to both managers. Handles level-ups automatically,
- * granting 1 talent point per level reached.
- */
-export const awardMatchXp = async (
-  supabase: SupabaseClient,
-  winnerTeamId: string,
-  loserTeamId: string
-): Promise<void> => {
-  const { data: clubs } = await supabase
-    .from('clubes')
-    .select('id, owner_id')
-    .in('id', [winnerTeamId, loserTeamId]);
-
-  if (!clubs || clubs.length === 0) return;
-
-  const ownerIds = (clubs as any[]).map((c) => c.owner_id).filter(Boolean);
-  if (ownerIds.length === 0) return;
-
-  const { data: managers } = await supabase
-    .from('managers')
-    .select('id, owner_id, nivel, xp, xp_siguiente, puntos_talento')
-    .in('owner_id', ownerIds);
-
-  if (!managers) return;
-
-  await Promise.all(
-    (managers as any[]).map(async (manager) => {
-      const club = (clubs as any[]).find((c) => c.owner_id === manager.owner_id);
-      const isWinner = club && String(club.id) === String(winnerTeamId);
-      const xpGain = isWinner ? XP_WIN : XP_LOSS;
-
-      let newXp = Number(manager.xp ?? 0) + xpGain;
-      let nivel = Number(manager.nivel ?? 1);
-      let xpSiguiente = Number(manager.xp_siguiente ?? xpForNextLevel(nivel));
-      let puntosTalento = Number(manager.puntos_talento ?? 0);
-
-      while (newXp >= xpSiguiente) {
-        newXp -= xpSiguiente;
-        nivel++;
-        puntosTalento++;
-        xpSiguiente = xpForNextLevel(nivel);
-      }
-
-      await supabase
-        .from('managers')
-        .update({ xp: newXp, nivel, xp_siguiente: xpSiguiente, puntos_talento: puntosTalento })
-        .eq('id', manager.id);
-    })
-  );
 };

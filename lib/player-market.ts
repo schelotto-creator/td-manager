@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
-import { getSaleBonus } from '@/lib/manager-talents';
+import { getSaleBonus, awardXpToTeam, XP_SIGNING } from '@/lib/manager-talents';
 
 export const AUCTION_DURATION_DAYS = 3;
 export const MIN_BID_INCREMENT_ABS = 10_000;
@@ -148,6 +148,8 @@ export const closeExpiredAuctions = async (
           .from('market_listings')
           .update({ status: 'sold' })
           .eq('id', listing.id);
+
+        await awardXpToTeam(supabaseAdmin, listing.buyer_team_id, XP_SIGNING).catch(() => {});
 
         const fmt = new Intl.NumberFormat('es-ES');
         const priceStr = `${fmt.format(listing.current_price)} €`;

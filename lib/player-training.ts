@@ -1,6 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
-import { fetchAllManagerTalents, getTrainingMultiplier, DEFAULT_TALENTS } from '@/lib/manager-talents';
+import { fetchAllManagerTalents, getTrainingMultiplier, awardXpToTeam, XP_TRAINING_PER_PLAYER, DEFAULT_TALENTS } from '@/lib/manager-talents';
 
 export type TrainingConfig = {
   baseGain: number;
@@ -164,13 +164,18 @@ export const applyFridayTraining = async (
   }
 
   if (teamTrainingMap.size > 0) {
-    await insertActivity(supabaseAdmin, [...teamTrainingMap.entries()].map(([team_id, count]) => ({
-      team_id,
-      type: 'training' as const,
-      title: 'Entrenamiento semanal',
-      body: `${count} jugador${count > 1 ? 'es' : ''} mejorado${count > 1 ? 's' : ''} esta semana`,
-      href: '/training'
-    }))).catch(() => {});
+    await Promise.all([
+      insertActivity(supabaseAdmin, [...teamTrainingMap.entries()].map(([team_id, count]) => ({
+        team_id,
+        type: 'training' as const,
+        title: 'Entrenamiento semanal',
+        body: `${count} jugador${count > 1 ? 'es' : ''} mejorado${count > 1 ? 's' : ''} esta semana`,
+        href: '/training'
+      }))).catch(() => {}),
+      ...[...teamTrainingMap.entries()].map(([team_id, count]) =>
+        awardXpToTeam(supabaseAdmin, team_id, count * XP_TRAINING_PER_PLAYER).catch(() => {})
+      )
+    ]);
   }
 
   return { updated, errors, log };
