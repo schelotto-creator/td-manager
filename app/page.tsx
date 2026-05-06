@@ -418,6 +418,32 @@ export default function Dashboard() {
           </section>
         )}
 
+        {activityFeed.length > 0 && (
+          <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
+            <h2 className="text-white text-lg font-black tracking-tight mb-4">Actividad Reciente</h2>
+            <div className="flex flex-col gap-1.5">
+              {activityFeed.map(event => {
+                const meta = ACTIVITY_META[event.type];
+                const inner = (
+                  <div className={`flex items-center gap-3 border-l-2 ${meta.border} pl-3 pr-2 py-2 rounded-r-xl`}>
+                    <span className="text-base shrink-0 leading-none">{meta.icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className={`${meta.color} text-xs font-bold leading-tight`}>{event.title}</p>
+                      {event.body && <p className="text-slate-400 text-xs leading-tight mt-0.5 truncate">{event.body}</p>}
+                    </div>
+                    <span className="text-slate-600 text-[10px] shrink-0 font-mono tabular-nums">
+                      {formatRelativeTime(event.created_at)}
+                    </span>
+                  </div>
+                );
+                return event.href
+                  ? <Link key={event.id} href={event.href} className="hover:bg-slate-800/40 rounded-xl transition-colors">{inner}</Link>
+                  : <div key={event.id}>{inner}</div>;
+              })}
+            </div>
+          </section>
+        )}
+
         <section className="bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-white text-lg md:text-xl font-black tracking-tight">Centro de Operaciones</h2>
