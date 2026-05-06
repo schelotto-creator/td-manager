@@ -15,6 +15,8 @@ type Manager = {
   nombre: string;
   nivel: number;
   xp?: number;
+  talento_ojo?: number;
+  ojeos?: Record<string, string[]>;
 };
 
 type Club = {
@@ -80,6 +82,8 @@ export default function Dashboard() {
   const [flashOpportunity, setFlashOpportunity] = useState<FlashOpportunity | null>(null);
   const [claimingFlash, setClaimingFlash] = useState(false);
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
+  const [talentoOjo, setTalentoOjo] = useState(0);
+  const [ojeos, setOjeos] = useState<Record<string, string[]>>({});
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -105,6 +109,8 @@ export default function Dashboard() {
 
         setManager(managerData);
         setClub(clubData);
+        setTalentoOjo(Number(managerData.talento_ojo ?? 0));
+        setOjeos((managerData.ojeos as Record<string, string[]>) ?? {});
 
         type MatchResult = { home_team_id: string; away_team_id: string; home_score: number; away_score: number; season_number: number | null; jornada?: number | null };
 
@@ -295,6 +301,48 @@ export default function Dashboard() {
     loadDashboard();
   }, [router]);
 
+  const FLASH_STATS = ['speed','stamina','shooting_3pt','shooting_2pt','dribbling','defense','rebounding','passing'] as const;
+  const FLASH_STAT_LABELS: Record<string, string> = { speed:'Ritmo', stamina:'Stamina', shooting_3pt:'T3', shooting_2pt:'T2', dribbling:'Manejo', defense:'DEF', rebounding:'REB', passing:'Pase' };
+
+  const flashGetShuffled = (seed: number) => {
+    const stats = [...FLASH_STATS] as string[];
+    let m = stats.length, t, i, s = seed;
+    while (m) { const x = Math.sin(s++)*10000; i = Math.floor((x-Math.floor(x))*m--); t=stats[m]; stats[m]=stats[i]; stats[i]=t; }
+    return stats;
+  };
+  const flashInterval = (val: number, spread: number, seed: number) => {
+    const x = Math.sin(seed)*10000; const r = x-Math.floor(x);
+    const off = Math.floor(r*(spread+1));
+    return { min: Math.max(1,val-spread+off), max: Math.min(99,val+spread+off) };
+  };
+  const renderFlashStat = (player: NonNullable<FlashOpportunity['player']>, statName: string) => {
+    const val = (player as any)[statName] as number ?? 50;
+    const scouted = ojeos[String(player.id)]?.includes(statName);
+    if (scouted) return <span className="font-mono font-bold text-[11px] text-green-400">{val}</span>;
+    const shuffled = flashGetShuffled(player.id);
+    const idx = shuffled.indexOf(statName);
+    const seed = player.id + statName.length;
+    if (talentoOjo >= 3) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
+    if (talentoOjo === 2) {
+      if (idx < 4) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
+      if (idx < 7) { const {min,max}=flashInterval(val,4,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
+    }
+    if (talentoOjo === 1) {
+      if (idx < 2) return <span className="font-mono font-bold text-[11px] text-white">{val}</span>;
+      if (idx < 5) { const {min,max}=flashInterval(val,6,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
+    }
+    if (talentoOjo === 0 && idx < 3) { const {min,max}=flashInterval(val,8,seed); return <span className="font-mono font-bold text-[11px] text-orange-400">{min}-{max}</span>; }
+    return <span className="font-mono font-bold text-[11px] text-slate-600 animate-pulse">???</span>;
+  };
+  const flashOverall = (player: NonNullable<FlashOpportunity['player']>) => {
+    const shuffled = flashGetShuffled(player.id);
+    const missing = FLASH_STATS.filter(s => !shuffled.slice(0, talentoOjo===3?8:talentoOjo===2?4:talentoOjo===1?2:0).includes(s) && !ojeos[String(player.id)]?.includes(s));
+    if (missing.length === 0) return String(player.overall);
+    const spread = talentoOjo===3?1:talentoOjo===2?2:talentoOjo===1?4:6;
+    const {min,max}=flashInterval(player.overall,spread,player.id);
+    return `${min}-${max}`;
+  };
+
   const claimFlash = async () => {
     if (!flashOpportunity || claimingFlash) return;
     setClaimingFlash(true);
@@ -466,24 +514,45 @@ export default function Dashboard() {
             {flashMessage ? (
               <p className="text-sm font-bold text-white mt-2">{flashMessage}</p>
             ) : flashOpportunity?.player && (
-              <div className="flex flex-col sm:flex-row sm:items-center gap-4 mt-3">
-                <div className="flex-1">
-                  <p className="text-white font-black text-lg leading-tight">{flashOpportunity.player.name}</p>
-                  <p className="text-slate-400 text-xs mt-0.5">{flashOpportunity.player.position} · {flashOpportunity.player.age} años · OVR {flashOpportunity.player.overall}</p>
-                  <div className="flex items-baseline gap-2 mt-2">
-                    <span className="text-amber-300 font-black text-xl font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.flash_price)} €</span>
-                    <span className="text-slate-500 line-through text-sm font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.original_price)} €</span>
-                    <span className="text-green-400 text-xs font-black">−35%</span>
+              <div className="mt-3 flex flex-col lg:flex-row gap-5">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-start gap-4">
+                    <div className="h-14 w-14 shrink-0 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col items-center justify-center font-black text-amber-300">
+                      <span className="text-lg leading-none">{flashOverall(flashOpportunity.player)}</span>
+                      <span className="text-[8px] uppercase tracking-widest text-amber-500/60 mt-0.5">OVR</span>
+                    </div>
+                    <div>
+                      <p className="text-white font-black text-lg leading-tight">{flashOpportunity.player.name}</p>
+                      <p className="text-slate-400 text-xs mt-0.5">{flashOpportunity.player.position} · {flashOpportunity.player.age}A · {flashOpportunity.player.nationality}</p>
+                      <div className="flex items-baseline gap-2 mt-1.5">
+                        <span className="text-amber-300 font-black text-base font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.flash_price)} €</span>
+                        <span className="text-slate-500 line-through text-xs font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.original_price)} €</span>
+                        <span className="text-green-400 text-[10px] font-black">−35%</span>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="mt-3 grid grid-cols-4 gap-1.5">
+                    {FLASH_STATS.map(stat => (
+                      <div key={stat} className="bg-black/30 rounded-lg px-2 py-1.5 flex flex-col items-center gap-0.5">
+                        <span className="text-[9px] text-slate-500 uppercase font-bold tracking-wider">{FLASH_STAT_LABELS[stat]}</span>
+                        {renderFlashStat(flashOpportunity.player!, stat)}
+                      </div>
+                    ))}
                   </div>
                 </div>
-                <button
-                  onClick={claimFlash}
-                  disabled={claimingFlash}
-                  className="shrink-0 px-6 py-3 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-black uppercase text-xs tracking-widest rounded-xl transition-all flex items-center gap-2"
-                >
-                  <Flame size={14} />
-                  {claimingFlash ? 'Fichando...' : 'Fichar Ahora'}
-                </button>
+                <div className="flex lg:flex-col justify-end gap-2 lg:gap-3 shrink-0">
+                  <button
+                    onClick={claimFlash}
+                    disabled={claimingFlash}
+                    className="px-5 py-3 bg-amber-500 hover:bg-amber-400 disabled:bg-slate-700 disabled:text-slate-500 text-slate-950 font-black uppercase text-xs tracking-widest rounded-xl transition-all flex items-center gap-2"
+                  >
+                    <Flame size={14} />
+                    {claimingFlash ? 'Fichando...' : 'Fichar Ahora'}
+                  </button>
+                  <Link href="/market" className="px-5 py-3 border border-amber-500/30 text-amber-400 hover:bg-amber-500/10 font-black uppercase text-xs tracking-widest rounded-xl transition-all text-center">
+                    Ver Mercado
+                  </Link>
+                </div>
               </div>
             )}
           </section>
