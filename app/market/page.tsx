@@ -376,25 +376,25 @@ export default function TransferMarket() {
       // Award XP for signing — fire and forget
       if (ownerId) {
         const XP_SIGNING = 30;
-        supabase.from('managers')
-          .select('id, nivel, xp, xp_siguiente, puntos_talento')
-          .eq('owner_id', ownerId)
-          .maybeSingle()
-          .then(({ data: mgr }) => {
-            if (!mgr) return;
-            let xp = Number((mgr as any).xp ?? 0) + XP_SIGNING;
-            let nivel = Number((mgr as any).nivel ?? 1);
-            let xpSiguiente = Number((mgr as any).xp_siguiente ?? nivel * nivel * 400);
-            let puntos_talento = Number((mgr as any).puntos_talento ?? 0);
-            while (xp >= xpSiguiente) {
-              xp -= xpSiguiente;
-              nivel++;
-              puntos_talento++;
-              xpSiguiente = nivel * nivel * 400;
-            }
-            supabase.from('managers').update({ xp, nivel, xp_siguiente: xpSiguiente, puntos_talento }).eq('id', (mgr as any).id);
-          })
-          .catch(() => {});
+        void Promise.resolve(
+          supabase.from('managers')
+            .select('id, nivel, xp, xp_siguiente, puntos_talento')
+            .eq('owner_id', ownerId)
+            .maybeSingle()
+        ).then(({ data: mgr }) => {
+          if (!mgr) return;
+          let xp = Number((mgr as any).xp ?? 0) + XP_SIGNING;
+          let nivel = Number((mgr as any).nivel ?? 1);
+          let xpSiguiente = Number((mgr as any).xp_siguiente ?? nivel * nivel * 400);
+          let puntos_talento = Number((mgr as any).puntos_talento ?? 0);
+          while (xp >= xpSiguiente) {
+            xp -= xpSiguiente;
+            nivel++;
+            puntos_talento++;
+            xpSiguiente = nivel * nivel * 400;
+          }
+          return supabase.from('managers').update({ xp, nivel, xp_siguiente: xpSiguiente, puntos_talento }).eq('id', (mgr as any).id);
+        }).catch(() => {});
       }
     } catch (error) {
       console.error(error);
