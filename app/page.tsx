@@ -74,6 +74,7 @@ export default function Dashboard() {
   const [activityFeed, setActivityFeed] = useState<ActivityEvent[]>([]);
   const [seasonStats, setSeasonStats] = useState<{ pj: number; v: number; d: number; pts: number }>({ pj: 0, v: 0, d: 0, pts: 0 });
   const [leaguePosition, setLeaguePosition] = useState<{ pos: number; total: number } | null>(null);
+  const [winStreak, setWinStreak] = useState(0);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -100,7 +101,7 @@ export default function Dashboard() {
         setManager(managerData);
         setClub(clubData);
 
-        type MatchResult = { home_team_id: string; away_team_id: string; home_score: number; away_score: number; season_number: number | null };
+        type MatchResult = { home_team_id: string; away_team_id: string; home_score: number; away_score: number; season_number: number | null; jornada?: number | null };
 
         const grupoId = clubData.grupo_id;
         const [leagueRes, groupClubsRes, playedMatchesRes] = await Promise.all([
@@ -112,10 +113,11 @@ export default function Dashboard() {
             : Promise.resolve({ data: [] }),
           supabase
             .from('matches')
-            .select('home_team_id,away_team_id,home_score,away_score,season_number')
+            .select('home_team_id,away_team_id,home_score,away_score,season_number,jornada')
             .eq('played', true)
             .or(`home_team_id.eq.${clubData.id},away_team_id.eq.${clubData.id}`)
             .order('season_number', { ascending: false })
+            .order('jornada', { ascending: false })
             .limit(300)
         ]);
 
@@ -138,6 +140,22 @@ export default function Dashboard() {
           if (mine > theirs) sv++; else sd++;
         }
         setSeasonStats({ pj: seasonMatches.length, v: sv, d: sd, pts: sv * 2 + sd });
+
+        // Compute win/loss streak from most-recent matches first (already ordered DESC)
+        let streak = 0;
+        if (playedMatches.length > 0) {
+          const first = playedMatches[0];
+          const fHome = String(first.home_team_id) === String(clubData.id);
+          const fWon = (fHome ? first.home_score : first.away_score) > (fHome ? first.away_score : first.home_score);
+          streak = fWon ? 1 : -1;
+          for (let i = 1; i < playedMatches.length; i++) {
+            const m = playedMatches[i];
+            const isH = String(m.home_team_id) === String(clubData.id);
+            const won = (isH ? m.home_score : m.away_score) > (isH ? m.away_score : m.home_score);
+            if (won === fWon) { streak += fWon ? 1 : -1; } else { break; }
+          }
+        }
+        setWinStreak(streak);
 
         if (groupClubIds.length > 1) {
           const { data: groupMatchesData } = await supabase
@@ -320,6 +338,16 @@ export default function Dashboard() {
                       <Trophy size={13} className="text-yellow-400" /> {leaguePosition.pos}º de {leaguePosition.total}
                     </span>
                   )}
+                  {winStreak >= 3 && (
+                    <span className="inline-flex items-center gap-1.5 bg-orange-500/15 border border-orange-500/40 px-3 py-1 rounded-full text-orange-300 animate-pulse">
+                      🔥 {winStreak} seguidas
+                    </span>
+                  )}
+                  {winStreak <= -3 && (
+                    <span className="inline-flex items-center gap-1.5 bg-red-500/10 border border-red-500/30 px-3 py-1 rounded-full text-red-400">
+                      ⚠️ {Math.abs(winStreak)} derrotas seguidas
+                    </span>
+                  )}
                 </div>
               </div>
 
@@ -339,8 +367,8 @@ export default function Dashboard() {
               </div>
             </div>
 
-            <div className="mt-5 grid grid-cols-2 md:grid-cols-4 gap-3">
-              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
+            <div className="mt-5 grid grid-cols-3 md:grid-cols-5 gap-3">
+              <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3 col-span-1 md:col-span-1">
                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">Presupuesto</div>
                 <div className="text-green-400 font-mono font-black text-sm mt-1">{formatMoney(club.presupuesto || 0)}</div>
               </div>
@@ -355,6 +383,22 @@ export default function Dashboard() {
               <div className="bg-slate-950/70 border border-slate-800 rounded-xl p-3">
                 <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">PTS</div>
                 <div className="text-cyan-300 font-black text-lg mt-1">{seasonStats.pts}</div>
+              </div>
+              <div className={`border rounded-xl p-3 transition-colors ${
+                winStreak >= 3 ? 'bg-orange-500/10 border-orange-500/40' :
+                winStreak <= -3 ? 'bg-red-500/10 border-red-500/30' :
+                'bg-slate-950/70 border-slate-800'
+              }`}>
+                <div className="text-[10px] uppercase text-slate-500 font-bold tracking-widest">Racha</div>
+                <div className={`font-black text-lg mt-1 ${
+                  winStreak >= 3 ? 'text-orange-300' :
+                  winStreak <= -3 ? 'text-red-400' :
+                  winStreak > 0 ? 'text-white' : 'text-slate-400'
+                }`}>
+                  {winStreak === 0 ? '–' :
+                   winStreak > 0 ? `🔥${winStreak}V` :
+                   `❄️${Math.abs(winStreak)}D`}
+                </div>
               </div>
             </div>
           </div>
