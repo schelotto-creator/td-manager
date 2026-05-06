@@ -1,5 +1,6 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CLUB_STATUS } from '@/lib/season-draft';
+import { awardSeasonXpToAll } from '@/lib/manager-talents';
 import {
   startSeasonDraft,
   type SeasonDraftClubRow,
@@ -925,6 +926,8 @@ export const maybeFinalizeSeasonRollover = async (
   const draftMessage = seasonDraftResult
     ? `Draft iniciado para ${seasonDraftResult.humanClubs} equipos de usuario (${seasonDraftResult.prospectsCreated} prospectos).`
     : 'Draft no iniciado.';
+
+  await awardSeasonXpToAll(supabaseAdmin).catch(() => {});
 
   return {
     status: 'ok',
