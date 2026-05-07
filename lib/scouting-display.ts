@@ -1,3 +1,13 @@
+export const POSITION_BADGE: Record<string, { abbr: string; bg: string; border: string; text: string }> = {
+  'Base':      { abbr: 'PG', bg: 'bg-sky-500/15',     border: 'border-sky-500/40',     text: 'text-sky-300' },
+  'Escolta':   { abbr: 'SG', bg: 'bg-cyan-500/15',    border: 'border-cyan-500/40',    text: 'text-cyan-300' },
+  'Alero':     { abbr: 'SF', bg: 'bg-emerald-500/15', border: 'border-emerald-500/40', text: 'text-emerald-300' },
+  'Ala-Pívot': { abbr: 'PF', bg: 'bg-orange-500/15',  border: 'border-orange-500/40',  text: 'text-orange-300' },
+  'Pívot':     { abbr: 'C',  bg: 'bg-violet-500/15',  border: 'border-violet-500/40',  text: 'text-violet-300' },
+};
+export const getPositionBadge = (position: string) =>
+  POSITION_BADGE[position] ?? { abbr: position.slice(0, 2).toUpperCase(), bg: 'bg-slate-700/50', border: 'border-slate-600', text: 'text-slate-300' };
+
 export const SCOUT_STATS = [
   'speed', 'stamina', 'shooting_3pt', 'shooting_2pt',
   'dribbling', 'defense', 'rebounding', 'passing'
