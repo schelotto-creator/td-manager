@@ -10,7 +10,7 @@ import { normalizeSeasonNumber } from '@/lib/match-seasons';
 import { fetchActivityFeed, ACTIVITY_META, formatRelativeTime, type ActivityEvent } from '@/lib/activity-feed';
 import { fetchActiveFlashOpportunity, type FlashOpportunity } from '@/lib/flash-market';
 import { getTimeRemaining } from '@/lib/player-market';
-import { SCOUT_STATS, SCOUT_STAT_LABELS, getStatDisplay, getOverallDisplay } from '@/lib/scouting-display';
+import { SCOUT_STATS, SCOUT_STAT_LABELS, getStatDisplay, getPositionBadge } from '@/lib/scouting-display';
 
 type Manager = {
   nombre: string;
@@ -485,13 +485,15 @@ export default function Dashboard() {
               <div className="mt-3 flex flex-col lg:flex-row gap-5">
                 <div className="flex-1 min-w-0">
                   <div className="flex items-start gap-4">
-                    <div className="h-14 w-14 shrink-0 rounded-xl bg-amber-500/10 border border-amber-500/30 flex flex-col items-center justify-center font-black text-amber-300">
-                      <span className="text-lg leading-none">{getOverallDisplay(flashOpportunity.player.id, flashOpportunity.computed_overall ?? flashOpportunity.player.overall, talentoOjo, ojeos)}</span>
-                      <span className="text-[8px] uppercase tracking-widest text-amber-500/60 mt-0.5">OVR</span>
+                    {(() => { const pos = flashOpportunity.display_position ?? flashOpportunity.player.position; const pb = getPositionBadge(pos); return (
+                    <div className={`h-14 w-14 shrink-0 rounded-xl flex flex-col items-center justify-center border-2 ${pb.bg} ${pb.border}`}>
+                      <span className={`text-xl font-black leading-none ${pb.text}`}>{pb.abbr}</span>
+                      <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider mt-0.5">{pos}</span>
                     </div>
+                    ); })()}
                     <div>
                       <p className="text-white font-black text-lg leading-tight">{flashOpportunity.player.name}</p>
-                      <p className="text-slate-400 text-xs mt-0.5">{flashOpportunity.display_position ?? flashOpportunity.player.position} · {flashOpportunity.player.age}A · {flashOpportunity.player.nationality}</p>
+                      <p className="text-slate-400 text-xs mt-0.5">{flashOpportunity.player.age}A · {flashOpportunity.player.nationality}</p>
                       <div className="flex items-baseline gap-2 mt-1.5">
                         <span className="text-amber-300 font-black text-base font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.flash_price)} €</span>
                         <span className="text-slate-500 line-through text-xs font-mono">{new Intl.NumberFormat('es-ES').format(flashOpportunity.original_price)} €</span>
