@@ -223,6 +223,7 @@ export default function AdminDashboard() {
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
   const [flashLog, setFlashLog] = useState<string | null>(null);
+  const [objectivesLog, setObjectivesLog] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const [stats, setStats] = useState({ players: 0, freeAgents: 0, teams: 0 });
 
@@ -1279,6 +1280,24 @@ export default function AdminDashboard() {
     }
   };
 
+  const generarObjetivos = async () => {
+    setObjectivesLog(null);
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) throw new Error('Sin sesión activa');
+      const res = await fetch('/api/admin/season-objectives/generate', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Error desconocido');
+      setObjectivesLog(`✅ T${data.seasonNumber} · ${data.objectivesCount} objetivos activos`);
+    } catch (err: any) {
+      setObjectivesLog(`❌ ${err.message}`);
+    }
+  };
+
   const generarFlashDeal = async () => {
     setFlashLog(null);
     try {
@@ -1604,6 +1623,28 @@ export default function AdminDashboard() {
                   className="w-full py-4 bg-amber-600 hover:bg-amber-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
                 >
                   <Flame size={16} /> Lanzar Oferta Flash
+                </button>
+              </div>
+
+              <div className="bg-slate-900 border border-yellow-500/20 p-6 rounded-3xl shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-yellow-500/10 text-yellow-400 rounded-xl flex items-center justify-center">
+                    <Target size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-black uppercase text-white tracking-wide">Objetivos de Temporada</h2>
+                    <p className="text-[10px] text-yellow-500/70 uppercase tracking-widest">3 metas por equipo</p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">Genera los 3 objetivos de temporada para todos los equipos humanos según su nivel de liga. Seguro re-ejecutar: usa upsert y no sobreescribe progreso existente.</p>
+                {objectivesLog && (
+                  <p className="text-[11px] font-mono mb-3 text-yellow-300">{objectivesLog}</p>
+                )}
+                <button
+                  onClick={generarObjetivos}
+                  className="w-full py-4 bg-yellow-600 hover:bg-yellow-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
+                >
+                  <Target size={16} /> Generar Objetivos
                 </button>
               </div>
 
