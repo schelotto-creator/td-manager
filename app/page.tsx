@@ -537,15 +537,19 @@ export default function Dashboard() {
           </section>
         )}
 
-        {seasonObjectives.length > 0 && (
-          <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
+        <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
             <div className="flex items-center gap-2 mb-4">
               <Target size={16} className="text-yellow-400" />
               <h2 className="text-white text-lg font-black tracking-tight">Objetivos de Temporada</h2>
-              <span className="text-slate-500 text-[10px] font-bold uppercase tracking-widest">
-                T{currentSeason} · {seasonObjectives.filter(o => o.completed).length}/{seasonObjectives.length}
-              </span>
+              {seasonObjectives.length > 0 && (
+                <span className="text-slate-500 text-[10px] font-bold uppercase tracking-widest">
+                  T{currentSeason} · {seasonObjectives.filter(o => o.completed).length}/{seasonObjectives.length}
+                </span>
+              )}
             </div>
+            {seasonObjectives.length === 0 ? (
+              <p className="text-slate-500 text-xs">No hay objetivos para esta temporada. Un administrador debe generarlos desde el panel de control.</p>
+            ) : (
             <div className="flex flex-col gap-3">
               {seasonObjectives.map(obj => {
                 const done = obj.completed;
@@ -597,8 +601,8 @@ export default function Dashboard() {
                 );
               })}
             </div>
+            )}
           </section>
-        )}
 
         {inboxItems.length > 0 && (
           <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
