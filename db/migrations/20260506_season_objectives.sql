@@ -19,3 +19,15 @@ CREATE INDEX IF NOT EXISTS idx_season_objectives_team_season
   ON season_objectives (team_id, season_number);
 CREATE INDEX IF NOT EXISTS idx_season_objectives_type_completed
   ON season_objectives (team_id, type, completed);
+
+ALTER TABLE season_objectives ENABLE ROW LEVEL SECURITY;
+
+-- Managers can read their own team's objectives
+CREATE POLICY "managers can read own objectives" ON season_objectives
+  FOR SELECT USING (
+    team_id IN (SELECT id FROM clubes WHERE owner_id = auth.uid())
+  );
+
+-- Only service role (server-side) can insert/update objectives
+CREATE POLICY "service role can write objectives" ON season_objectives
+  FOR ALL USING (auth.role() = 'service_role');
