@@ -7,7 +7,8 @@ export type ActivityType =
   | 'training'
   | 'market_outbid'
   | 'market_won'
-  | 'market_sold';
+  | 'market_sold'
+  | 'objective_complete';
 
 export type ActivityEvent = {
   id: number;
@@ -65,7 +66,8 @@ export const ACTIVITY_META: Record<
   training:       { color: 'text-purple-400', border: 'border-l-purple-500', icon: '💪' },
   market_outbid:  { color: 'text-orange-400', border: 'border-l-orange-500', icon: '🔔' },
   market_won:     { color: 'text-emerald-400',border: 'border-l-emerald-500',icon: '✅' },
-  market_sold:    { color: 'text-cyan-400',   border: 'border-l-cyan-500',   icon: '💰' },
+  market_sold:       { color: 'text-cyan-400',   border: 'border-l-cyan-500',   icon: '💰' },
+  objective_complete:{ color: 'text-yellow-400', border: 'border-l-yellow-500', icon: '🎯' },
 };
 
 export const formatRelativeTime = (isoDate: string): string => {

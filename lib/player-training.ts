@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
 import { fetchAllManagerTalents, getTrainingMultiplier, awardXpToTeam, XP_TRAINING_PER_PLAYER, DEFAULT_TALENTS } from '@/lib/manager-talents';
+import { progressObjective } from '@/lib/season-objectives';
 
 export type TrainingConfig = {
   baseGain: number;
@@ -174,7 +175,10 @@ export const applyFridayTraining = async (
       }))).catch(() => {}),
       ...[...teamTrainingMap.entries()].map(([team_id, count]) =>
         awardXpToTeam(supabaseAdmin, team_id, count * XP_TRAINING_PER_PLAYER).catch(() => {})
-      )
+      ),
+      ...[...teamTrainingMap.entries()].map(([team_id, count]) =>
+        progressObjective(supabaseAdmin, team_id, 'train_players', count).catch(() => {})
+      ),
     ]);
   }
 

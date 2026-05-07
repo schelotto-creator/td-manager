@@ -20,6 +20,7 @@ import { applyFridayTraining, fetchTrainingConfig, isMadridFriday } from '@/lib/
 import { applyMatchInjuries } from '@/lib/player-injuries';
 import { insertActivity } from '@/lib/activity-feed';
 import { awardMatchXp } from '@/lib/manager-talents';
+import { progressObjective } from '@/lib/season-objectives';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -1372,6 +1373,7 @@ export const runScheduledMatches = async (
         const loserTeamId = homeWon ? match.away_team_id : match.home_team_id;
         await Promise.all([
           awardMatchXp(supabaseAdmin, winnerTeamId, loserTeamId).catch(() => {}),
+          progressObjective(supabaseAdmin, String(winnerTeamId), 'win_matches', 1).catch(() => {}),
           insertActivity(supabaseAdmin, [
           {
             team_id: match.home_team_id,

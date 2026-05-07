@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { CLUB_STATUS } from '@/lib/season-draft';
 import { awardSeasonXpToAll } from '@/lib/manager-talents';
+import { verifyAndRewardObjectives, generateSeasonObjectives } from '@/lib/season-objectives';
 import {
   startSeasonDraft,
   type SeasonDraftClubRow,
@@ -773,6 +774,16 @@ export const maybeFinalizeSeasonRollover = async (
       });
   }
 
+  // Build final standings positions per team for objective verification
+  const teamFinalPositionsMap = new Map<string, number>();
+  for (const group of allGroups) {
+    const groupClubs = allClubs
+      .filter((c) => Number(c.grupo_id) === Number(group.id))
+      .slice()
+      .sort((a, b) => (b.pts ?? 0) - (a.pts ?? 0));
+    groupClubs.forEach((c, idx) => teamFinalPositionsMap.set(String(c.id), idx + 1));
+  }
+
   const promoChampionByGroup = new Map<number, TeamId>();
   const relegatedByGroup = new Map<number, TeamId>();
 
@@ -927,7 +938,9 @@ export const maybeFinalizeSeasonRollover = async (
     ? `Draft iniciado para ${seasonDraftResult.humanClubs} equipos de usuario (${seasonDraftResult.prospectsCreated} prospectos).`
     : 'Draft no iniciado.';
 
+  await verifyAndRewardObjectives(supabaseAdmin, activeSeasonNumber, teamFinalPositionsMap).catch(() => {});
   await awardSeasonXpToAll(supabaseAdmin).catch(() => {});
+  await generateSeasonObjectives(supabaseAdmin, activeSeasonNumber + 1).catch(() => {});
 
   return {
     status: 'ok',

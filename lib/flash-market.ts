@@ -1,6 +1,7 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { awardXpToTeam, XP_SIGNING } from '@/lib/manager-talents';
 import { insertActivity } from '@/lib/activity-feed';
+import { progressObjective } from '@/lib/season-objectives';
 import {
   fetchPositionOverallConfig,
   calculateWeightedOverallForBestRole,
@@ -155,6 +156,7 @@ export const claimFlashOpportunity = async (
   const fmt = new Intl.NumberFormat('es-ES');
   await Promise.all([
     awardXpToTeam(supabaseAdmin, teamId, XP_SIGNING).catch(() => {}),
+    progressObjective(supabaseAdmin, teamId, 'sign_players', 1).catch(() => {}),
     insertActivity(supabaseAdmin, [{
       team_id: teamId,
       type: 'market_won' as const,

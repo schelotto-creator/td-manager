@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase';
 import { useRouter } from 'next/navigation';
-import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info, Flame } from 'lucide-react';
+import { Trophy, Calendar, Users, DollarSign, Activity, Star, Shield, Dumbbell, LineChart, PlayCircle, ArrowRight, TrendingDown, TrendingUp, AlertTriangle, Info, Flame, Target } from 'lucide-react';
 import Link from 'next/link';
 import { CLUB_STATUS } from '@/lib/season-draft';
 import { normalizeSeasonNumber } from '@/lib/match-seasons';
@@ -11,6 +11,7 @@ import { fetchActivityFeed, ACTIVITY_META, formatRelativeTime, type ActivityEven
 import { fetchActiveFlashOpportunity, type FlashOpportunity } from '@/lib/flash-market';
 import { getTimeRemaining } from '@/lib/player-market';
 import { SCOUT_STATS, SCOUT_STAT_LABELS, getStatDisplay, getPositionBadge } from '@/lib/scouting-display';
+import { fetchTeamObjectives, type SeasonObjective } from '@/lib/season-objectives';
 
 type Manager = {
   nombre: string;
@@ -85,6 +86,8 @@ export default function Dashboard() {
   const [flashMessage, setFlashMessage] = useState<string | null>(null);
   const [talentoOjo, setTalentoOjo] = useState(0);
   const [ojeos, setOjeos] = useState<Record<string, string[]>>({});
+  const [seasonObjectives, setSeasonObjectives] = useState<SeasonObjective[]>([]);
+  const [currentSeason, setCurrentSeason] = useState(1);
 
   useEffect(() => {
     const loadDashboard = async () => {
@@ -152,6 +155,7 @@ export default function Dashboard() {
           if (mine > theirs) sv++; else sd++;
         }
         setSeasonStats({ pj: seasonMatches.length, v: sv, d: sd, pts: sv * 2 + sd });
+        setCurrentSeason(currentSeason);
 
         // Compute win/loss streak from most-recent matches first (already ordered DESC)
         let streak = 0;
@@ -214,6 +218,10 @@ export default function Dashboard() {
             isHome: next.home_team_id === clubData.id
           });
         }
+
+        // Fetch objectives, activity feed, flash, and inbox data in parallel
+        const objectivesData = await fetchTeamObjectives(supabase, clubData.id, currentSeason).catch(() => [] as SeasonObjective[]);
+        setSeasonObjectives(objectivesData);
 
         // Build inbox items, activity feed and flash opportunity in parallel
         const [lastMatchRes, playersRes, feedData, flashData] = await Promise.all([
@@ -525,6 +533,69 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+          </section>
+        )}
+
+        {seasonObjectives.length > 0 && (
+          <section className="mb-6 bg-slate-900/60 border border-slate-800 rounded-3xl p-5 md:p-6">
+            <div className="flex items-center gap-2 mb-4">
+              <Target size={16} className="text-yellow-400" />
+              <h2 className="text-white text-lg font-black tracking-tight">Objetivos de Temporada</h2>
+              <span className="text-slate-500 text-[10px] font-bold uppercase tracking-widest">
+                T{currentSeason} · {seasonObjectives.filter(o => o.completed).length}/{seasonObjectives.length}
+              </span>
+            </div>
+            <div className="flex flex-col gap-3">
+              {seasonObjectives.map(obj => {
+                const done = obj.completed;
+                const isTopX = obj.type === 'top_x';
+                const progress = isTopX
+                  ? (leaguePosition ? Math.max(0, 1 - (leaguePosition.pos - 1) / Math.max(obj.target_value, 1)) : 0)
+                  : Math.min(1, obj.current_value / obj.target_value);
+                const pct = Math.round(progress * 100);
+                const fmt = new Intl.NumberFormat('es-ES');
+                return (
+                  <div key={obj.id} className={`rounded-2xl p-4 border transition-colors ${done ? 'bg-yellow-500/10 border-yellow-500/30' : 'bg-slate-950/60 border-slate-800'}`}>
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <span className="text-base leading-none shrink-0">{done ? '✅' : '🎯'}</span>
+                        <p className={`text-sm font-bold leading-tight truncate ${done ? 'text-yellow-300' : 'text-white'}`}>
+                          {obj.description}
+                        </p>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <p className="text-[10px] text-emerald-400 font-black uppercase tracking-wider">+{fmt.format(obj.budget_reward)} €</p>
+                        <p className="text-[10px] text-cyan-400 font-bold">{obj.xp_reward} XP</p>
+                      </div>
+                    </div>
+                    {!done && (
+                      <div className="mt-2.5">
+                        {isTopX ? (
+                          <p className="text-[11px] text-slate-400">
+                            {leaguePosition
+                              ? `Posición actual: ${leaguePosition.pos}º de ${leaguePosition.total} (objetivo: top ${obj.target_value})`
+                              : 'Sin datos de clasificación aún'}
+                          </p>
+                        ) : (
+                          <>
+                            <div className="flex justify-between text-[10px] text-slate-500 font-mono mb-1">
+                              <span>{obj.type === 'sell_for' ? `Mejor venta: ${fmt.format(obj.current_value)} €` : `${obj.current_value} / ${obj.target_value}`}</span>
+                              <span>{pct}%</span>
+                            </div>
+                            <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-cyan-600 to-cyan-400 rounded-full transition-all duration-500"
+                                style={{ width: `${pct}%` }}
+                              />
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
           </section>
         )}
 
