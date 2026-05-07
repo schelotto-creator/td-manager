@@ -220,8 +220,9 @@ export default function Dashboard() {
         }
 
         // Fetch objectives, activity feed, flash, and inbox data in parallel
-        const objectivesData = await fetchTeamObjectives(supabase, clubData.id, currentSeason).catch(() => [] as SeasonObjective[]);
+        const objectivesData = await fetchTeamObjectives(supabase, clubData.id).catch(() => [] as SeasonObjective[]);
         setSeasonObjectives(objectivesData);
+        if (objectivesData.length > 0) setCurrentSeason(objectivesData[0].season_number);
 
         // Build inbox items, activity feed and flash opportunity in parallel
         const [lastMatchRes, playersRes, feedData, flashData] = await Promise.all([
