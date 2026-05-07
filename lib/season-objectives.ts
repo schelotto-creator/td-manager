@@ -72,7 +72,7 @@ export const generateSeasonObjectives = async (
   seasonNumber: number
 ): Promise<void> => {
   const [{ data: clubs }, { data: leagues }] = await Promise.all([
-    supabaseAdmin.from('clubes').select('id, league_id').eq('is_bot', false).not('league_id', 'is', null),
+    supabaseAdmin.from('clubes').select('id, league_id').not('owner_id', 'is', null).not('league_id', 'is', null),
     supabaseAdmin.from('ligas').select('id, nivel'),
   ]);
 
@@ -207,14 +207,24 @@ export const verifyAndRewardObjectives = async (
 
 export const fetchTeamObjectives = async (
   supabase: SupabaseClient,
-  teamId: string,
-  seasonNumber: number
+  teamId: string
 ): Promise<SeasonObjective[]> => {
+  // Find the latest season that has objectives for this team
+  const { data: latest } = await supabase
+    .from('season_objectives')
+    .select('season_number')
+    .eq('team_id', teamId)
+    .order('season_number', { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (!latest) return [];
+
   const { data } = await supabase
     .from('season_objectives')
     .select('*')
     .eq('team_id', teamId)
-    .eq('season_number', seasonNumber)
+    .eq('season_number', (latest as any).season_number)
     .order('id', { ascending: true });
   return (data ?? []) as SeasonObjective[];
 };
