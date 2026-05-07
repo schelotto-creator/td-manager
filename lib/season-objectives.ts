@@ -209,22 +209,15 @@ export const fetchTeamObjectives = async (
   supabase: SupabaseClient,
   teamId: string
 ): Promise<SeasonObjective[]> => {
-  // Find the latest season that has objectives for this team
-  const { data: latest } = await supabase
-    .from('season_objectives')
-    .select('season_number')
-    .eq('team_id', teamId)
-    .order('season_number', { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (!latest) return [];
-
   const { data } = await supabase
     .from('season_objectives')
     .select('*')
     .eq('team_id', teamId)
-    .eq('season_number', (latest as any).season_number)
-    .order('id', { ascending: true });
-  return (data ?? []) as SeasonObjective[];
+    .order('season_number', { ascending: false })
+    .order('id', { ascending: true })
+    .limit(15);
+
+  if (!data || data.length === 0) return [];
+  const latestSeason = (data[0] as any).season_number;
+  return (data as SeasonObjective[]).filter((o) => o.season_number === latestSeason);
 };
