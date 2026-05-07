@@ -14,7 +14,7 @@ import {
 } from '@/lib/position-overall-config';
 import { ShoppingCart as MarketIcon, DollarSign as CashIcon, ArrowLeft as BackIcon, UserPlus as BuyIcon, Eye, Search, CheckCircle2, Gavel, Tag, Clock, RefreshCw, X, AlertTriangle, PackageOpen } from 'lucide-react';
 import { computeMinBid, getTimeRemaining, AUCTION_DURATION_DAYS, type MarketListingWithPlayer } from '@/lib/player-market';
-import { getShuffledStats, getStatInterval, getMissingStats, getOverallDisplay, getStatDisplay, SCOUT_STATS } from '@/lib/scouting-display';
+import { getShuffledStats, getStatInterval, getMissingStats, getOverallDisplay, getStatDisplay, SCOUT_STATS, getPositionBadge } from '@/lib/scouting-display';
 import { formaToStars, FORMA_STAR_COLORS, FORMA_STAR_LABELS } from '@/lib/player-forma';
 import { isPlayerInjured } from '@/lib/player-injuries';
 import Link from 'next/link';
@@ -699,23 +699,22 @@ export default function TransferMarket() {
         {freeAgents.map(player => {
             const missingStats = getMissingStatsForPlayer(player.id);
             const isFullyScouted = missingStats.length === 0;
-            const displayOvr = getOverallDisplayForPlayer(player.id, player.overall);
-            const isIntervalOvr = displayOvr.includes('-');
-            
+            const posBadge = getPositionBadge(player.position);
+
             return (
             <div key={player.id} className={`relative bg-gradient-to-b from-slate-900 to-slate-950 border rounded-3xl overflow-hidden transition-all duration-300 flex flex-col h-full group ${isFullyScouted ? 'border-green-500/50 shadow-[0_10px_30px_rgba(34,197,94,0.1)] hover:border-green-400' : 'border-white/10 shadow-xl hover:border-orange-500/50 hover:shadow-[0_10px_30px_rgba(234,88,12,0.15)] hover:-translate-y-1'}`}>
-                
+
                 <div className="p-6 flex gap-5 items-center relative z-10">
                     {isFullyScouted && <div className="absolute top-4 right-4 bg-green-500/20 border border-green-500/50 text-green-400 text-[8px] font-black px-2 py-1 rounded-md uppercase tracking-widest flex items-center gap-1"><CheckCircle2 size={10}/> Reporte Full</div>}
-                    
-                    <div className={`h-16 px-4 min-w-[4rem] rounded-2xl flex flex-col items-center justify-center font-black border-2 shadow-inner whitespace-nowrap tracking-tighter ${isIntervalOvr ? 'text-lg md:text-xl' : 'text-2xl'} ${isFullyScouted ? 'text-green-400 border-green-500/30 bg-green-500/10' : 'text-orange-400 border-orange-500/30 bg-orange-500/10'}`}>
-                        {displayOvr}
+
+                    <div className={`h-16 w-16 shrink-0 rounded-2xl flex flex-col items-center justify-center border-2 shadow-inner ${posBadge.bg} ${posBadge.border}`}>
+                        <span className={`text-2xl font-black leading-none ${posBadge.text}`}>{posBadge.abbr}</span>
+                        <span className="text-[8px] font-bold text-slate-500 uppercase tracking-wider mt-0.5">{player.position}</span>
                     </div>
 
                     <div className="flex-1 overflow-hidden">
                         <h3 className="font-black italic text-white text-xl leading-tight truncate uppercase tracking-tight">{player.name}</h3>
                         <div className="flex gap-2 mt-2 items-center">
-                            <span className="text-[10px] font-black bg-white/5 px-2 py-1 rounded-md text-slate-300 border border-white/10 tracking-widest">{player.position}</span>
                             <span className="text-[10px] font-bold text-slate-400 px-1 py-0.5 whitespace-nowrap">{player.age}A</span>
                             <span className="text-[10px] font-bold text-slate-400 px-1 py-0.5 border-l border-white/10 whitespace-nowrap">{player.height}CM</span>
                         </div>
