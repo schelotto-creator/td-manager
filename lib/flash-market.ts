@@ -1,6 +1,12 @@
 import type { SupabaseClient } from '@supabase/supabase-js';
 import { awardXpToTeam, XP_SIGNING } from '@/lib/manager-talents';
 import { insertActivity } from '@/lib/activity-feed';
+import {
+  fetchPositionOverallConfig,
+  calculateWeightedOverallForBestRole,
+  getBestRoleForPlayer,
+  applyExperienceBonus,
+} from '@/lib/position-overall-config';
 
 export const FLASH_DURATION_HOURS = 48;
 export const FLASH_DISCOUNT = 0.35; // 35% off market value
@@ -10,6 +16,8 @@ export type FlashOpportunity = {
   player_id: number;
   original_price: number;
   flash_price: number;
+  computed_overall: number | null;
+  display_position: string | null;
   expires_at: string;
   claimed_by_team_id: string | null;
   claimed_at: string | null;
@@ -59,29 +67,36 @@ export const fetchActiveFlashOpportunity = async (
 export const generateFlashOpportunity = async (
   supabaseAdmin: SupabaseClient
 ): Promise<{ id: number; playerName: string; flashPrice: number } | null> => {
-  const { data: candidates } = await supabaseAdmin
-    .from('players')
-    .select('id, name, overall')
-    .is('team_id', null)
-    .gte('overall', 55)
-    .lte('overall', 82)
-    .limit(50);
+  const [{ data: candidates }, positionConfig] = await Promise.all([
+    supabaseAdmin
+      .from('players')
+      .select('id, name, overall, experience, shooting_3pt, shooting_2pt, defense, rebounding, passing, dribbling, speed, stamina, position')
+      .is('team_id', null)
+      .gte('overall', 50)
+      .lte('overall', 85)
+      .limit(50),
+    fetchPositionOverallConfig(supabaseAdmin)
+  ]);
 
   if (!candidates || candidates.length === 0) return null;
 
-  const player = (candidates as any[])[Math.floor(Math.random() * candidates.length)];
-  const original_price = computePlayerMarketValue(Number(player.overall));
+  const raw = (candidates as any[])[Math.floor(Math.random() * candidates.length)];
+  const baseOverall = calculateWeightedOverallForBestRole(raw, positionConfig);
+  const computed_overall = applyExperienceBonus(baseOverall, raw.experience);
+  const display_position = getBestRoleForPlayer(raw, positionConfig);
+
+  const original_price = computePlayerMarketValue(computed_overall);
   const flash_price = Math.round(original_price * (1 - FLASH_DISCOUNT) / 5000) * 5000;
   const expires_at = new Date(Date.now() + FLASH_DURATION_HOURS * 3_600_000).toISOString();
 
   const { data: opp, error } = await supabaseAdmin
     .from('flash_opportunities')
-    .insert({ player_id: player.id, original_price, flash_price, expires_at })
+    .insert({ player_id: raw.id, original_price, flash_price, computed_overall, display_position, expires_at })
     .select('id')
     .single();
 
   if (error || !opp) return null;
-  return { id: (opp as any).id, playerName: player.name, flashPrice: flash_price };
+  return { id: (opp as any).id, playerName: raw.name, flashPrice: flash_price };
 };
 
 export const claimFlashOpportunity = async (
