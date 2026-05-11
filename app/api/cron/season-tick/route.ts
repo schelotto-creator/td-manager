@@ -198,6 +198,7 @@ const runTick = async (request: NextRequest) => {
   let weeklyMaintenance: any = { status: 'not_executed' };
   const warnings: string[] = [];
 
+  // Weekly maintenance runs independently — a failure here must NOT block match simulation.
   try {
     const { data, error } = await supabaseAdmin.rpc('run_weekly_maintenance', { p_force: forceWeekly });
     if (error) {
@@ -210,22 +211,27 @@ const runTick = async (request: NextRequest) => {
           'run_weekly_maintenance no existe en BD. Se usó fallback TypeScript para la forma semanal.'
         );
       } else {
-        throw new Error(`Fallo mantenimiento semanal: ${toErrorText(error)}`);
+        warnings.push(`Fallo mantenimiento semanal: ${toErrorText(error)}`);
+        weeklyMaintenance = { status: 'error', error: toErrorText(error) };
       }
     } else {
       weeklyMaintenance = data || { status: 'ok' };
     }
 
-    // Si se ejecutó el mantenimiento semanal (o se forzó), ejecutamos el cálculo financiero corregido en TS.
-    // IMPORTANTE: Solo ejecutamos si el status es 'ok' (se acaba de realizar el mantenimiento).
-    // Si es 'already_done', significa que ya se hizo y NO debemos volver a cobrar.
+    // Solo ejecutamos el cálculo financiero si el mantenimiento acaba de ejecutarse con éxito.
+    // Si es 'already_done' o 'error', no volvemos a cobrar.
     const maintenanceStatus = (weeklyMaintenance as any)?.status;
-    
     if (maintenanceStatus === 'ok') {
-       const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
-       weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
+      const financeResult = await runWeeklyFinanceUpdate(supabaseAdmin);
+      weeklyMaintenance = { ...weeklyMaintenance, finance: financeResult };
     }
+  } catch (maintenanceError) {
+    warnings.push(`Excepción en mantenimiento semanal: ${toErrorText(maintenanceError)}`);
+    weeklyMaintenance = { status: 'error', error: toErrorText(maintenanceError) };
+  }
 
+  // Match simulation and market close always run regardless of maintenance outcome.
+  try {
     const [scheduledMatches, marketClose] = await Promise.all([
       runScheduledMatches(supabaseAdmin, { now, maxMatches }),
       closeExpiredAuctions(supabaseAdmin).catch((err) => ({ closed: 0, errors: [toErrorText(err)] }))
