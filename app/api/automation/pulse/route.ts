@@ -4,6 +4,7 @@ import { runScheduledMatches } from '@/lib/scheduled-match-runner';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
+export const maxDuration = 300;
 
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
