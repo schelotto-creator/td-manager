@@ -1259,7 +1259,7 @@ export default function AdminDashboard() {
       const res = await fetch('/api/automation/pulse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ maxMatches: 20 })
+        body: JSON.stringify({ maxMatches: 5 })
       });
       const text = await res.text();
       let data: { error?: string; scheduledMatches?: Record<string, unknown> };
