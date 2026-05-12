@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { supabase } from '@/lib/supabase';
 import { Settings, Users, Database, AlertTriangle, Zap, RefreshCcw, DollarSign, Activity, Eye, X, ShieldAlert, Shield, ShieldOff, Trash2, Globe, Terminal, CalendarDays, Trophy, GraduationCap, Target, Github, GitBranch, Dumbbell, Flame } from 'lucide-react';
 import Link from 'next/link';
@@ -222,6 +222,8 @@ export default function AdminDashboard() {
   const [logs, setLogs] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
+  const [isBulkSimulating, setIsBulkSimulating] = useState(false);
+  const stopBulkRef = useRef(false);
   const [flashLog, setFlashLog] = useState<string | null>(null);
   const [objectivesLog, setObjectivesLog] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -1280,6 +1282,50 @@ export default function AdminDashboard() {
     }
   };
 
+  const simularEnBucle = async () => {
+    if (isBulkSimulating) {
+      stopBulkRef.current = true;
+      return;
+    }
+    stopBulkRef.current = false;
+    setIsBulkSimulating(true);
+    addLog('🔁 Iniciando simulación en bucle (1 partido por ronda)...');
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) { addLog('❌ Sin sesión activa'); setIsBulkSimulating(false); return; }
+
+    let total = 0;
+    let rounds = 0;
+    const MAX_ROUNDS = 500;
+    while (!stopBulkRef.current && rounds < MAX_ROUNDS) {
+      rounds++;
+      try {
+        const res = await fetch('/api/automation/pulse', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ maxMatches: 1 })
+        });
+        if (!res.ok) { addLog(`❌ HTTP ${res.status} en ronda ${rounds}`); break; }
+        const data = await res.json();
+        const s = data.scheduledMatches as any;
+        const finalized = s?.finalized ?? 0;
+        const pending = s?.pending ?? null;
+        total += finalized;
+        if (finalized === 0) {
+          addLog(`✅ Bucle finalizado: ${total} partidos simulados en ${rounds} rondas.`);
+          break;
+        }
+        addLog(`✔ Ronda ${rounds}: +${finalized} partido(s) — total ${total}${pending != null ? ` — pendientes: ${pending}` : ''}`);
+      } catch (err: any) {
+        addLog(`❌ Error en ronda ${rounds}: ${err.message}`);
+        break;
+      }
+    }
+    if (rounds >= MAX_ROUNDS) addLog(`⚠️ Límite de ${MAX_ROUNDS} rondas alcanzado.`);
+    if (stopBulkRef.current) addLog('🛑 Simulación en bucle detenida por el usuario.');
+    setIsBulkSimulating(false);
+  };
+
   const generarObjetivos = async () => {
     setObjectivesLog(null);
     try {
@@ -1594,14 +1640,24 @@ export default function AdminDashboard() {
                   </div>
                 </div>
                 <p className="text-xs text-slate-400 mb-6 leading-relaxed">Procesa y finaliza todos los partidos con fecha vencida. Útil tras resetear jornadas manualmente.</p>
-                <button
-                  onClick={forzarSimulacion}
-                  disabled={isGenerating || loading}
-                  className="w-full py-4 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
-                >
-                  {isGenerating ? <Activity className="animate-spin" size={16} /> : <Zap size={16} />}
-                  {isGenerating ? 'Simulando...' : 'Simular Partidos Pendientes'}
-                </button>
+                <div className="flex flex-col gap-2">
+                  <button
+                    onClick={forzarSimulacion}
+                    disabled={isGenerating || isBulkSimulating || loading}
+                    className="w-full py-4 bg-sky-600 hover:bg-sky-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2"
+                  >
+                    {isGenerating ? <Activity className="animate-spin" size={16} /> : <Zap size={16} />}
+                    {isGenerating ? 'Simulando...' : 'Simular Partidos (1 tanda)'}
+                  </button>
+                  <button
+                    onClick={simularEnBucle}
+                    disabled={isGenerating || loading}
+                    className={`w-full py-4 font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2 ${isBulkSimulating ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-indigo-600 hover:bg-indigo-500 disabled:bg-slate-800 disabled:text-slate-500 text-white'}`}
+                  >
+                    {isBulkSimulating ? <Activity className="animate-spin" size={16} /> : <RefreshCcw size={16} />}
+                    {isBulkSimulating ? 'Detener bucle' : 'Simular Todo en Bucle'}
+                  </button>
+                </div>
               </div>
 
               <div className="bg-slate-900 border border-amber-500/20 p-6 rounded-3xl shadow-xl">
