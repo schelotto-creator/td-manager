@@ -36,7 +36,7 @@ const toEnginePlayer = (p: any): EnginePlayer => ({
   forma: Number(p.forma || 80),
 });
 
-const placeholder = (teamId: string, i: number): EnginePlayer => ({
+const placeholder = (i: number): EnginePlayer => ({
   id: -1 * (i + 1),
   name: `CPU ${i + 1}`,
   position: ['Base', 'Escolta', 'Alero', 'Ala-Pívot', 'Pívot'][i % 5],
@@ -45,9 +45,9 @@ const placeholder = (teamId: string, i: number): EnginePlayer => ({
   experience: 0, forma: 75,
 });
 
-const ensureRoster = (teamId: string, roster: EnginePlayer[]) => {
+const ensureRoster = (roster: EnginePlayer[]) => {
   const out = [...roster];
-  while (out.length < 5) out.push(placeholder(teamId, out.length));
+  while (out.length < 5) out.push(placeholder(out.length));
   return out;
 };
 
@@ -58,6 +58,66 @@ const extractGamePlan = (tactics: unknown, team: any): TeamGamePlan => {
     offenseStyle: src.offense || team?.tactic_offense || undefined,
     defenseStyle: src.defense || team?.tactic_defense || undefined,
   };
+};
+
+const patchMatchReplay = async (
+  supabaseAdmin: ReturnType<typeof getSupabaseAdmin>,
+  matchId: number
+): Promise<{ ok: boolean; eventsCount?: number; error?: string; alreadyHasReplay?: boolean }> => {
+  const { data: match, error: matchErr } = await supabaseAdmin
+    .from('matches')
+    .select('id,home_team_id,away_team_id,home_score,away_score,play_by_play,home_tactics,away_tactics')
+    .eq('id', matchId)
+    .maybeSingle();
+
+  if (matchErr || !match) return { ok: false, error: 'Partido no encontrado' };
+  if (!(match as any).played) return { ok: false, error: 'El partido aún no está jugado' };
+
+  const existing = (match as any).play_by_play;
+  if (Array.isArray(existing) && existing.length > 0) {
+    return { ok: true, alreadyHasReplay: true, eventsCount: existing.length };
+  }
+
+  const m = match as any;
+  const [teamsRes, playersRes, settings, positionConfig] = await Promise.all([
+    supabaseAdmin.from('clubes').select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense').in('id', [m.home_team_id, m.away_team_id]),
+    supabaseAdmin.from('players').select('id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id').in('team_id', [m.home_team_id, m.away_team_id]),
+    fetchMatchSimulatorSettings(supabaseAdmin),
+    fetchPositionOverallConfig(supabaseAdmin),
+  ]);
+
+  const teams = (teamsRes.data || []) as any[];
+  const players = (playersRes.data || []) as any[];
+  const homeTeam = teams.find((t: any) => String(t.id) === String(m.home_team_id));
+  const awayTeam = teams.find((t: any) => String(t.id) === String(m.away_team_id));
+  if (!homeTeam || !awayTeam) return { ok: false, error: 'Equipos no encontrados' };
+
+  const homePlayers = players.filter((p: any) => String(p.team_id) === String(m.home_team_id)).map(toEnginePlayer);
+  const awayPlayers = players.filter((p: any) => String(p.team_id) === String(m.away_team_id)).map(toEnginePlayer);
+
+  const simulation = generateMatchSimulation({
+    homeRoster: ensureRoster(homePlayers),
+    awayRoster: ensureRoster(awayPlayers),
+    homeGamePlan: extractGamePlan(m.home_tactics, homeTeam),
+    awayGamePlan: extractGamePlan(m.away_tactics, awayTeam),
+    homeTeamName: homeTeam.nombre,
+    awayTeamName: awayTeam.nombre,
+    homeTeamColor: homeTeam.color_primario || '#3b82f6',
+    awayTeamColor: awayTeam.color_primario || '#ef4444',
+    settings,
+    positionOverallConfig: positionConfig,
+  });
+
+  if (!simulation.events.length) return { ok: false, error: 'La simulación no generó eventos' };
+
+  const { error: patchErr } = await supabaseAdmin
+    .from('matches')
+    .update({ play_by_play: simulation.events })
+    .eq('id', matchId)
+    .eq('played', true);
+
+  if (patchErr) return { ok: false, error: patchErr.message };
+  return { ok: true, eventsCount: simulation.events.length };
 };
 
 export async function POST(request: NextRequest) {
@@ -71,76 +131,51 @@ export async function POST(request: NextRequest) {
   }
 
   const body = await request.json().catch(() => null) as { matchId?: unknown } | null;
-  const matchId = Number(body?.matchId);
-  if (!Number.isFinite(matchId) || matchId <= 0) {
-    return NextResponse.json({ error: 'matchId inválido' }, { status: 400 });
+  const rawId = body?.matchId;
+
+  // Mode A: specific matchId
+  if (rawId !== undefined && rawId !== null && rawId !== '') {
+    const matchId = Number(rawId);
+    if (!Number.isFinite(matchId) || matchId <= 0) {
+      return NextResponse.json({ error: 'matchId inválido' }, { status: 400 });
+    }
+    const result = await patchMatchReplay(supabaseAdmin, matchId);
+    if (!result.ok) return NextResponse.json({ error: result.error }, { status: 400 });
+    const { ok: _ok, ...rest } = result;
+    return NextResponse.json({ ok: true, matchId, ...rest });
   }
 
-  const { data: match, error: matchErr } = await supabaseAdmin
+  // Mode B: pick next played match with missing play_by_play
+  const { data: next, error: nextErr } = await supabaseAdmin
     .from('matches')
-    .select('*')
-    .eq('id', matchId)
+    .select('id')
+    .eq('played', true)
+    .or('play_by_play.is.null,play_by_play.eq.[]')
+    .order('id', { ascending: true })
+    .limit(1)
     .maybeSingle();
 
-  if (matchErr || !match) {
-    return NextResponse.json({ error: 'Partido no encontrado' }, { status: 404 });
-  }
-  if (!(match as any).played) {
-    return NextResponse.json({ error: 'El partido aún no está jugado' }, { status: 400 });
-  }
-
-  const existing = (match as any).play_by_play;
-  if (Array.isArray(existing) && existing.length > 0) {
-    return NextResponse.json({ ok: true, matchId, alreadyHasReplay: true, eventsCount: existing.length });
-  }
-
-  const m = match as any;
-  const [teamsRes, playersRes, settings, positionConfig] = await Promise.all([
-    supabaseAdmin.from('clubes').select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense').in('id', [m.home_team_id, m.away_team_id]),
-    supabaseAdmin.from('players').select('id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id').in('team_id', [m.home_team_id, m.away_team_id]),
-    fetchMatchSimulatorSettings(supabaseAdmin),
-    fetchPositionOverallConfig(supabaseAdmin),
-  ]);
-
-  const teams = (teamsRes.data || []) as any[];
-  const players = (playersRes.data || []) as any[];
-  const homeTeam = teams.find((t) => String(t.id) === String(m.home_team_id));
-  const awayTeam = teams.find((t) => String(t.id) === String(m.away_team_id));
-  if (!homeTeam || !awayTeam) {
-    return NextResponse.json({ error: 'Equipos no encontrados' }, { status: 400 });
+  if (nextErr) return NextResponse.json({ error: nextErr.message }, { status: 500 });
+  if (!next) {
+    // Count how many are still missing
+    const { count } = await supabaseAdmin
+      .from('matches')
+      .select('id', { count: 'exact', head: true })
+      .eq('played', true)
+      .or('play_by_play.is.null,play_by_play.eq.[]');
+    return NextResponse.json({ ok: true, result: 'nothing_to_patch', remaining: count ?? 0 });
   }
 
-  const homePlayers = players.filter((p) => String(p.team_id) === String(m.home_team_id)).map(toEnginePlayer);
-  const awayPlayers = players.filter((p) => String(p.team_id) === String(m.away_team_id)).map(toEnginePlayer);
-  const homeRoster = ensureRoster(m.home_team_id, homePlayers);
-  const awayRoster = ensureRoster(m.away_team_id, awayPlayers);
+  const matchId = (next as any).id;
+  const result = await patchMatchReplay(supabaseAdmin, matchId);
 
-  const simulation = generateMatchSimulation({
-    homeRoster,
-    awayRoster,
-    homeGamePlan: extractGamePlan(m.home_tactics, homeTeam),
-    awayGamePlan: extractGamePlan(m.away_tactics, awayTeam),
-    homeTeamName: homeTeam.nombre,
-    awayTeamName: awayTeam.nombre,
-    homeTeamColor: homeTeam.color_primario || '#3b82f6',
-    awayTeamColor: awayTeam.color_primario || '#ef4444',
-    settings,
-    positionOverallConfig: positionConfig,
-  });
-
-  if (!simulation.events.length) {
-    return NextResponse.json({ error: 'La simulación no generó eventos' }, { status: 500 });
-  }
-
-  const { error: patchErr } = await supabaseAdmin
+  // Count remaining after this patch
+  const { count: remaining } = await supabaseAdmin
     .from('matches')
-    .update({ play_by_play: simulation.events })
-    .eq('id', matchId)
-    .eq('played', true);
+    .select('id', { count: 'exact', head: true })
+    .eq('played', true)
+    .or('play_by_play.is.null,play_by_play.eq.[]');
 
-  if (patchErr) {
-    return NextResponse.json({ error: patchErr.message }, { status: 500 });
-  }
-
-  return NextResponse.json({ ok: true, matchId, eventsCount: simulation.events.length });
+  const { ok: _ok, ...rest } = result;
+  return NextResponse.json({ ok: true, matchId, remaining: remaining ?? 0, ...rest });
 }
