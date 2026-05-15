@@ -224,6 +224,8 @@ export default function AdminDashboard() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isBulkSimulating, setIsBulkSimulating] = useState(false);
   const stopBulkRef = useRef(false);
+  const [isPatchingAll, setIsPatchingAll] = useState(false);
+  const stopPatchRef = useRef(false);
   const [patchMatchId, setPatchMatchId] = useState('');
   const [patchLog, setPatchLog] = useState<string | null>(null);
   const [flashLog, setFlashLog] = useState<string | null>(null);
@@ -1325,6 +1327,44 @@ export default function AdminDashboard() {
     setIsBulkSimulating(false);
   };
 
+  const parchearTodoEnBucle = async () => {
+    if (isPatchingAll) { stopPatchRef.current = true; return; }
+    stopPatchRef.current = false;
+    setIsPatchingAll(true);
+    setPatchLog('🔁 Iniciando parcheo masivo de replays...');
+    const { data: sessionData } = await supabase.auth.getSession();
+    const token = sessionData.session?.access_token;
+    if (!token) { setPatchLog('❌ Sin sesión activa'); setIsPatchingAll(false); return; }
+
+    let total = 0;
+    let rounds = 0;
+    const MAX_ROUNDS = 1000;
+    while (!stopPatchRef.current && rounds < MAX_ROUNDS) {
+      rounds++;
+      try {
+        const res = await fetch('/api/admin/patch-replay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({})
+        });
+        if (!res.ok) { setPatchLog(`❌ HTTP ${res.status} en ronda ${rounds}`); break; }
+        const data = await res.json();
+        if (data.result === 'nothing_to_patch') {
+          setPatchLog(`✅ Parcheo completado: ${total} replays generados. Sin más partidos con replay pendiente.`);
+          break;
+        }
+        if (!data.alreadyHasReplay) total++;
+        setPatchLog(`✔ Ronda ${rounds}: match ${data.matchId} (${data.eventsCount} eventos) — total ${total} — pendientes: ${data.remaining}`);
+      } catch (err: any) {
+        setPatchLog(`❌ Error en ronda ${rounds}: ${err.message}`);
+        break;
+      }
+    }
+    if (rounds >= MAX_ROUNDS) setPatchLog(`⚠️ Límite de ${MAX_ROUNDS} rondas alcanzado.`);
+    if (stopPatchRef.current) setPatchLog('🛑 Parcheo detenido por el usuario.');
+    setIsPatchingAll(false);
+  };
+
   const parchearReplay = async () => {
     const id = Number(patchMatchId.trim());
     if (!Number.isFinite(id) || id <= 0) { setPatchLog('❌ ID inválido'); return; }
@@ -1695,7 +1735,7 @@ export default function AdminDashboard() {
                   </div>
                 </div>
                 <p className="text-xs text-slate-400 mb-4 leading-relaxed">Si un partido ya tiene resultado pero no tiene replay guardado, introduce su ID y se generará un nuevo play-by-play.</p>
-                <div className="flex gap-2 mb-3">
+                <div className="flex gap-2 mb-2">
                   <input
                     type="number"
                     value={patchMatchId}
@@ -1705,12 +1745,20 @@ export default function AdminDashboard() {
                   />
                   <button
                     onClick={parchearReplay}
-                    disabled={!patchMatchId || loading}
+                    disabled={!patchMatchId || loading || isPatchingAll}
                     className="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all"
                   >
                     Parchar
                   </button>
                 </div>
+                <button
+                  onClick={parchearTodoEnBucle}
+                  disabled={!!patchMatchId || loading}
+                  className={`w-full py-3 font-black uppercase text-xs tracking-widest rounded-xl transition-all flex justify-center items-center gap-2 mb-3 ${isPatchingAll ? 'bg-red-600 hover:bg-red-500 text-white' : 'bg-violet-800 hover:bg-violet-700 disabled:bg-slate-800 disabled:text-slate-500 text-white'}`}
+                >
+                  {isPatchingAll ? <Activity className="animate-spin" size={14} /> : <RefreshCcw size={14} />}
+                  {isPatchingAll ? 'Detener parcheo' : 'Parchar Todo en Bucle'}
+                </button>
                 {patchLog && <p className="text-[11px] font-mono text-violet-300">{patchLog}</p>}
               </div>
 
