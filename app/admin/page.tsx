@@ -224,6 +224,8 @@ export default function AdminDashboard() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [isBulkSimulating, setIsBulkSimulating] = useState(false);
   const stopBulkRef = useRef(false);
+  const [patchMatchId, setPatchMatchId] = useState('');
+  const [patchLog, setPatchLog] = useState<string | null>(null);
   const [flashLog, setFlashLog] = useState<string | null>(null);
   const [objectivesLog, setObjectivesLog] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
@@ -1300,22 +1302,19 @@ export default function AdminDashboard() {
     while (!stopBulkRef.current && rounds < MAX_ROUNDS) {
       rounds++;
       try {
-        const res = await fetch('/api/automation/pulse', {
+        const res = await fetch('/api/admin/sim-one', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-          body: JSON.stringify({ maxMatches: 1 })
         });
         if (!res.ok) { addLog(`❌ HTTP ${res.status} en ronda ${rounds}`); break; }
         const data = await res.json();
-        const s = data.scheduledMatches as any;
-        const finalized = s?.finalized ?? 0;
-        const pending = s?.pending ?? null;
-        total += finalized;
-        if (finalized === 0) {
-          addLog(`✅ Bucle finalizado: ${total} partidos simulados en ${rounds} rondas.`);
+        if (data.result === 'nothing_due') {
+          addLog(`✅ Bucle finalizado: ${total} partidos simulados en ${rounds} rondas. No quedan partidos pendientes.`);
           break;
         }
-        addLog(`✔ Ronda ${rounds}: +${finalized} partido(s) — total ${total}${pending != null ? ` — pendientes: ${pending}` : ''}`);
+        const pending = data.pending ?? null;
+        total += data.finalized ?? 0;
+        addLog(`✔ Ronda ${rounds}: match ${data.matchId} (${data.score}) — total ${total}${pending != null ? ` — pendientes: ${pending}` : ''}`);
       } catch (err: any) {
         addLog(`❌ Error en ronda ${rounds}: ${err.message}`);
         break;
@@ -1324,6 +1323,31 @@ export default function AdminDashboard() {
     if (rounds >= MAX_ROUNDS) addLog(`⚠️ Límite de ${MAX_ROUNDS} rondas alcanzado.`);
     if (stopBulkRef.current) addLog('🛑 Simulación en bucle detenida por el usuario.');
     setIsBulkSimulating(false);
+  };
+
+  const parchearReplay = async () => {
+    const id = Number(patchMatchId.trim());
+    if (!Number.isFinite(id) || id <= 0) { setPatchLog('❌ ID inválido'); return; }
+    setPatchLog('⏳ Generando replay...');
+    try {
+      const { data: sessionData } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (!token) { setPatchLog('❌ Sin sesión activa'); return; }
+      const res = await fetch('/api/admin/patch-replay', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ matchId: id })
+      });
+      const data = await res.json();
+      if (!res.ok) { setPatchLog(`❌ ${data.error || 'Error desconocido'}`); return; }
+      if (data.alreadyHasReplay) {
+        setPatchLog(`ℹ️ El partido ${id} ya tiene replay (${data.eventsCount} eventos). No se modificó.`);
+      } else {
+        setPatchLog(`✅ Replay generado para partido ${id}: ${data.eventsCount} eventos guardados.`);
+      }
+    } catch (err: any) {
+      setPatchLog(`❌ ${err.message}`);
+    }
   };
 
   const generarObjetivos = async () => {
@@ -1658,6 +1682,36 @@ export default function AdminDashboard() {
                     {isBulkSimulating ? 'Detener bucle' : 'Simular Todo en Bucle'}
                   </button>
                 </div>
+              </div>
+
+              <div className="bg-slate-900 border border-violet-500/20 p-6 rounded-3xl shadow-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 bg-violet-500/10 text-violet-400 rounded-xl flex items-center justify-center">
+                    <Activity size={20} />
+                  </div>
+                  <div>
+                    <h2 className="font-black uppercase text-white tracking-wide">Parchar Replay</h2>
+                    <p className="text-[10px] text-slate-400 uppercase tracking-widest">Partido jugado sin detalle</p>
+                  </div>
+                </div>
+                <p className="text-xs text-slate-400 mb-4 leading-relaxed">Si un partido ya tiene resultado pero no tiene replay guardado, introduce su ID y se generará un nuevo play-by-play.</p>
+                <div className="flex gap-2 mb-3">
+                  <input
+                    type="number"
+                    value={patchMatchId}
+                    onChange={(e) => setPatchMatchId(e.target.value)}
+                    placeholder="ID del partido"
+                    className="flex-1 bg-slate-800 border border-slate-700 text-white text-xs rounded-xl px-3 py-2 outline-none focus:border-violet-500"
+                  />
+                  <button
+                    onClick={parchearReplay}
+                    disabled={!patchMatchId || loading}
+                    className="px-4 py-2 bg-violet-600 hover:bg-violet-500 disabled:bg-slate-800 disabled:text-slate-500 text-white font-black uppercase text-xs tracking-widest rounded-xl transition-all"
+                  >
+                    Parchar
+                  </button>
+                </div>
+                {patchLog && <p className="text-[11px] font-mono text-violet-300">{patchLog}</p>}
               </div>
 
               <div className="bg-slate-900 border border-amber-500/20 p-6 rounded-3xl shadow-xl">
