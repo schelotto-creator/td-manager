@@ -146,36 +146,53 @@ export async function POST(request: NextRequest) {
   }
 
   // Mode B: pick next played match with missing play_by_play
-  const { data: next, error: nextErr } = await supabaseAdmin
+  // First look for null, then for empty-array (edge case)
+  let nextId: number | null = null;
+
+  const { data: nullMatch, error: nullErr } = await supabaseAdmin
     .from('matches')
     .select('id')
     .eq('played', true)
-    .or('play_by_play.is.null,play_by_play.eq.[]')
+    .is('play_by_play', null)
     .order('id', { ascending: true })
     .limit(1)
     .maybeSingle();
 
-  if (nextErr) return NextResponse.json({ error: nextErr.message }, { status: 500 });
-  if (!next) {
-    // Count how many are still missing
-    const { count } = await supabaseAdmin
+  if (nullErr) return NextResponse.json({ error: nullErr.message }, { status: 500 });
+
+  if (nullMatch) {
+    nextId = (nullMatch as any).id;
+  } else {
+    // Fallback: scan a batch for empty-array play_by_play
+    const { data: candidateBatch, error: batchErr } = await supabaseAdmin
       .from('matches')
-      .select('id', { count: 'exact', head: true })
+      .select('id, play_by_play')
       .eq('played', true)
-      .or('play_by_play.is.null,play_by_play.eq.[]');
-    return NextResponse.json({ ok: true, result: 'nothing_to_patch', remaining: count ?? 0 });
+      .not('play_by_play', 'is', null)
+      .order('id', { ascending: true })
+      .limit(200);
+
+    if (batchErr) return NextResponse.json({ error: batchErr.message }, { status: 500 });
+
+    const emptyMatch = ((candidateBatch || []) as any[]).find(
+      (m) => Array.isArray(m.play_by_play) && m.play_by_play.length === 0
+    );
+    nextId = emptyMatch ? emptyMatch.id : null;
   }
 
-  const matchId = (next as any).id;
-  const result = await patchMatchReplay(supabaseAdmin, matchId);
-
-  // Count remaining after this patch
   const { count: remaining } = await supabaseAdmin
     .from('matches')
     .select('id', { count: 'exact', head: true })
     .eq('played', true)
-    .or('play_by_play.is.null,play_by_play.eq.[]');
+    .is('play_by_play', null);
+
+  if (nextId === null) {
+    return NextResponse.json({ ok: true, result: 'nothing_to_patch', remaining: remaining ?? 0 });
+  }
+
+  const matchId = nextId;
+  const result = await patchMatchReplay(supabaseAdmin, matchId);
 
   const { ok: _ok, ...rest } = result;
-  return NextResponse.json({ ok: true, matchId, remaining: remaining ?? 0, ...rest });
+  return NextResponse.json({ ok: true, matchId, remaining: Math.max(0, (remaining ?? 0) - 1), ...rest });
 }
