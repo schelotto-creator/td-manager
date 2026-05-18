@@ -66,7 +66,7 @@ const patchMatchReplay = async (
 ): Promise<{ ok: boolean; eventsCount?: number; error?: string; alreadyHasReplay?: boolean }> => {
   const { data: match, error: matchErr } = await supabaseAdmin
     .from('matches')
-    .select('id,home_team_id,away_team_id,home_score,away_score,play_by_play,home_tactics,away_tactics')
+    .select('id,played,home_team_id,away_team_id,home_score,away_score,play_by_play,home_tactics,away_tactics')
     .eq('id', matchId)
     .maybeSingle();
 
@@ -192,6 +192,10 @@ export async function POST(request: NextRequest) {
 
   const matchId = nextId;
   const result = await patchMatchReplay(supabaseAdmin, matchId);
+
+  if (!result.ok) {
+    return NextResponse.json({ error: result.error, matchId }, { status: 500 });
+  }
 
   const { ok: _ok, ...rest } = result;
   return NextResponse.json({ ok: true, matchId, remaining: Math.max(0, (remaining ?? 0) - 1), ...rest });
