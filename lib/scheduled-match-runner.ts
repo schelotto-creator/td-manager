@@ -21,6 +21,10 @@ import { applyMatchInjuries } from '@/lib/player-injuries';
 import { insertActivity } from '@/lib/activity-feed';
 import { awardMatchXp } from '@/lib/manager-talents';
 import { progressObjective } from '@/lib/season-objectives';
+import {
+  hasMissingStandingsColumns,
+  shouldFallbackFromFinalizeMatchRpc
+} from '@/lib/finalize-match-compat';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -154,31 +158,6 @@ const toErrorText = (error: unknown) => {
     return [message, details, hint].filter(Boolean).join(' ').trim() || JSON.stringify(error);
   }
   return String(error);
-};
-
-const isFinalizeMatchRpcMissing = (error: unknown) => {
-  const message = toErrorText(error).toLowerCase();
-  const code = isRecord(error) && typeof error.code === 'string' ? error.code.toLowerCase() : '';
-
-  if (code === 'pgrst202' || code === '42883') return true;
-
-  return (
-    message.includes('finalize_match_transaction') &&
-    (message.includes('could not find the function') ||
-      message.includes('no function matches') ||
-      message.includes('does not exist') ||
-      message.includes('not found'))
-  );
-};
-
-const hasMissingStandingsColumns = (error: unknown) => {
-  const message = toErrorText(error).toLowerCase();
-  return (
-    message.includes('column clubes.pj does not exist') ||
-    message.includes('column clubes.v does not exist') ||
-    message.includes('column clubes.d does not exist') ||
-    message.includes('column clubes.pts does not exist')
-  );
 };
 
 const hasMissingSimulationColumns = (error: unknown) => {
@@ -783,7 +762,7 @@ const finalizeMatchPersistence = async (
   });
 
   if (rpcError) {
-    if (!isFinalizeMatchRpcMissing(rpcError)) {
+    if (!shouldFallbackFromFinalizeMatchRpc(rpcError)) {
       throw new Error(`No se pudo cerrar el partido con transacción: ${toErrorText(rpcError)}`);
     }
 
@@ -813,7 +792,7 @@ const finalizeMatchPersistence = async (
     }
 
     await applyRegularSeasonStandings(supabaseAdmin, match, finalHome, finalAway);
-    let warning = 'RPC no disponible, se usó cierre legacy.';
+    let warning = 'RPC no disponible o incompatible con el esquema actual; se usó cierre legacy.';
 
     try {
       const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
@@ -840,13 +819,6 @@ const finalizeMatchPersistence = async (
     throw new Error(`Respuesta inesperada al cerrar partido: ${status}`);
   }
 
-  let standingsWarning: string | null = null;
-  try {
-    await applyRegularSeasonStandings(supabaseAdmin, match, finalHome, finalAway);
-  } catch (standingsError) {
-    standingsWarning = toErrorText(standingsError);
-  }
-
   try {
     const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
       applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
@@ -855,12 +827,12 @@ const finalizeMatchPersistence = async (
     ]);
     return {
       status: 'ok',
-      warning: [warning, standingsWarning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim() || null
+      warning: [warning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim() || null
     };
   } catch (postError) {
     return {
       status: 'ok',
-      warning: [warning, standingsWarning, toErrorText(postError)].filter(Boolean).join(' ').trim() || null
+      warning: [warning, toErrorText(postError)].filter(Boolean).join(' ').trim() || null
     };
   }
 };

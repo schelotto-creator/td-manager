@@ -3,6 +3,7 @@ import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { generateMatchSimulation, type EnginePlayer, type TeamGamePlan } from '@/lib/match-engine';
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
+import { shouldFallbackFromFinalizeMatchRpc } from '@/lib/finalize-match-compat';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -60,13 +61,6 @@ const extractGamePlan = (tactics: unknown, team: any): TeamGamePlan => {
   };
 };
 
-const isMissingRpc = (error: any) => {
-  const msg = String(error?.message || error?.details || '').toLowerCase();
-  return msg.includes('finalize_match_transaction') && (
-    msg.includes('could not find the function') || msg.includes('does not exist') || msg.includes('not found')
-  );
-};
-
 export async function POST(request: NextRequest) {
   const header = request.headers.get('authorization') || '';
   const token = header.startsWith('Bearer ') ? header.slice(7).trim() : null;
@@ -82,7 +76,7 @@ export async function POST(request: NextRequest) {
   // Fetch the next due unplayed match
   const { data: matchData, error: matchErr } = await supabaseAdmin
     .from('matches')
-    .select('id,jornada,fase,season_number,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at')
+    .select('id,jornada,fase,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play')
     .eq('played', false)
     .not('match_date', 'is', null)
     .lte('match_date', now.toISOString())
@@ -117,6 +111,12 @@ export async function POST(request: NextRequest) {
 
   const teams = (teamsRes.data || []) as any[];
   const players = (playersRes.data || []) as any[];
+  if (teamsRes.error) {
+    return NextResponse.json({ ok: false, error: teamsRes.error.message }, { status: 500 });
+  }
+  if (playersRes.error) {
+    return NextResponse.json({ ok: false, error: playersRes.error.message }, { status: 500 });
+  }
   const homeTeam = teams.find((t) => String(t.id) === String(m.home_team_id));
   const awayTeam = teams.find((t) => String(t.id) === String(m.away_team_id));
 
@@ -148,13 +148,12 @@ export async function POST(request: NextRequest) {
     p_player_stats: [],
   });
 
-  if (rpcError && !isMissingRpc(rpcError)) {
+  if (rpcError && !shouldFallbackFromFinalizeMatchRpc(rpcError)) {
     return NextResponse.json({ ok: false, error: rpcError.message }, { status: 500 });
   }
 
-  if (rpcError && isMissingRpc(rpcError)) {
-    // Fallback: direct update
-    const { error: updateErr } = await supabaseAdmin
+  if (rpcError) {
+    const { data: updatedMatch, error: updateErr } = await supabaseAdmin
       .from('matches')
       .update({
         played: true,
@@ -163,11 +162,30 @@ export async function POST(request: NextRequest) {
         play_by_play: simulation.events,
       })
       .eq('id', m.id)
-      .eq('played', false);
+      .eq('played', false)
+      .select('id')
+      .maybeSingle();
 
     if (updateErr) {
       return NextResponse.json({ ok: false, error: updateErr.message }, { status: 500 });
     }
+    if (!updatedMatch) {
+      return NextResponse.json({
+        ok: true,
+        result: 'already_played',
+        finalized: 0,
+        matchId: m.id,
+        pending: Math.max(0, (pending ?? 1) - 1),
+      });
+    }
+  } else if ((rpcData as { status?: string } | null)?.status === 'already_played') {
+    return NextResponse.json({
+      ok: true,
+      result: 'already_played',
+      finalized: 0,
+      matchId: m.id,
+      pending: Math.max(0, (pending ?? 1) - 1),
+    });
   }
 
   return NextResponse.json({

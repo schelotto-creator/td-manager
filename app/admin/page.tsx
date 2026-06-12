@@ -1308,13 +1308,34 @@ export default function AdminDashboard() {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
         });
-        if (!res.ok) { addLog(`❌ HTTP ${res.status} en ronda ${rounds}`); break; }
-        const data = await res.json();
+        const text = await res.text();
+        let data: {
+          error?: string;
+          result?: string;
+          finalized?: number;
+          matchId?: number;
+          score?: string;
+          pending?: number;
+        };
+        try {
+          data = JSON.parse(text);
+        } catch {
+          addLog(`❌ HTTP ${res.status} en ronda ${rounds}: ${text.slice(0, 300)}`);
+          break;
+        }
+        if (!res.ok) {
+          addLog(`❌ Ronda ${rounds}: ${data.error || `HTTP ${res.status}`}`);
+          break;
+        }
         if (data.result === 'nothing_due') {
           addLog(`✅ Bucle finalizado: ${total} partidos simulados en ${rounds} rondas. No quedan partidos pendientes.`);
           break;
         }
         const pending = data.pending ?? null;
+        if (data.result === 'already_played') {
+          addLog(`↪ Ronda ${rounds}: match ${data.matchId} ya estaba cerrado${pending != null ? ` — pendientes: ${pending}` : ''}`);
+          continue;
+        }
         total += data.finalized ?? 0;
         addLog(`✔ Ronda ${rounds}: match ${data.matchId} (${data.score}) — total ${total}${pending != null ? ` — pendientes: ${pending}` : ''}`);
       } catch (err: any) {

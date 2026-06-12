@@ -25,6 +25,10 @@ import {
   type PositionOverallConfig
 } from '@/lib/position-overall-config';
 import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
+import {
+  hasMissingStandingsColumns,
+  shouldFallbackFromFinalizeMatchRpc
+} from '@/lib/finalize-match-compat';
 
 type TeamId = string;
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
@@ -226,21 +230,6 @@ const toErrorText = (error: unknown) => {
     return [message, details, hint].filter(Boolean).join(' ').trim() || JSON.stringify(error);
   }
   return String(error);
-};
-
-const isFinalizeMatchRpcMissing = (error: unknown) => {
-  const message = toErrorText(error).toLowerCase();
-  const code = isRecord(error) && typeof error.code === 'string' ? error.code.toLowerCase() : '';
-
-  if (code === 'pgrst202' || code === '42883') return true;
-
-  return (
-    message.includes('finalize_match_transaction') &&
-    (message.includes('could not find the function') ||
-      message.includes('no function matches') ||
-      message.includes('does not exist') ||
-      message.includes('not found'))
-  );
 };
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
@@ -1197,6 +1186,9 @@ function MatchEnginePageContent() {
       .select('id, pj, v, d, pts')
       .in('id', [match.home_team_id, match.away_team_id]);
 
+    if (error && hasMissingStandingsColumns(error)) {
+      return;
+    }
     if (error || !clubs || clubs.length < 2) {
       throw new Error('No se pudo actualizar la clasificación.');
     }
@@ -1258,7 +1250,7 @@ function MatchEnginePageContent() {
     });
 
     if (rpcError) {
-      if (!isFinalizeMatchRpcMissing(rpcError)) {
+      if (!shouldFallbackFromFinalizeMatchRpc(rpcError)) {
         throw new Error(`No se pudo cerrar el partido con transacción: ${toErrorText(rpcError)}`);
       }
 
@@ -1278,7 +1270,7 @@ function MatchEnginePageContent() {
         throw new Error(matchUpdateError?.message || 'No se pudo guardar el resultado del partido.');
       }
 
-      const fallbackWarnings = ['No existe la RPC transaccional en Supabase. Se usó guardado legacy.'];
+      const fallbackWarnings = ['La RPC transaccional no está disponible o no es compatible con el esquema actual. Se usó guardado legacy.'];
       const statsSave = await persistPlayerStats(match.id, gameStatsRows);
       if (!statsSave.ok) {
         fallbackWarnings.push(`Stats de jugador no guardadas: ${statsSave.error}`);
