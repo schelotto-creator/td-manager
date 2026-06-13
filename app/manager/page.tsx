@@ -385,7 +385,27 @@ export default function ManagerPage() {
     const newPoints = Number(manager.puntos_talento || 0) - 1;
     setManager({ ...manager, [talentKey]: newLevel, puntos_talento: newPoints });
     try {
-      await supabase.from('managers').update({ [talentKey]: newLevel, puntos_talento: newPoints }).eq('id', manager.id);
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session?.access_token) {
+        throw new Error('Sesión no disponible.');
+      }
+      const response = await fetch('/api/manager/talents', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`
+        },
+        body: JSON.stringify({ talent: talentKey })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; result?: { new_level?: number; remaining_points?: number } }
+        | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo mejorar el talento.');
+      setManager({
+        ...manager,
+        [talentKey]: Number(payload?.result?.new_level ?? newLevel),
+        puntos_talento: Number(payload?.result?.remaining_points ?? newPoints)
+      });
       showMsg('success', '¡Talento mejorado!');
     } catch {
       setManager({ ...manager, [talentKey]: currentLevel, puntos_talento: Number(manager.puntos_talento || 0) });

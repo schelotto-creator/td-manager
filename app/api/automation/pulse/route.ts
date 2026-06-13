@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { getSupabaseAdmin } from '@/lib/supabase-admin';
 import { runScheduledMatches } from '@/lib/scheduled-match-runner';
+import { requireOwnedClub, toApiError } from '@/lib/server-auth';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,33 +16,16 @@ const toErrorText = (error: unknown) => {
   return String(error);
 };
 
-const getBearerToken = (request: NextRequest) => {
-  const header = request.headers.get('authorization') || '';
-  if (!header.startsWith('Bearer ')) return null;
-  const token = header.slice(7).trim();
-  return token || null;
-};
-
 const parsePositiveInt = (value: unknown) => {
   const numeric = Number(value);
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 };
 
 export async function POST(request: NextRequest) {
-  const bearerToken = getBearerToken(request);
-  if (!bearerToken) {
-    return NextResponse.json({ ok: false, error: 'Falta token de sesión.' }, { status: 401 });
-  }
-
   try {
-    const supabaseAdmin = getSupabaseAdmin();
-    const { data: authData, error: authError } = await supabaseAdmin.auth.getUser(bearerToken);
-    if (authError || !authData?.user) {
-      return NextResponse.json({ ok: false, error: 'Sesión inválida.' }, { status: 401 });
-    }
-
+    const { supabaseAdmin } = await requireOwnedClub(request);
     const body = (await request.json().catch(() => null)) as { maxMatches?: unknown } | null;
-    const maxMatches = Math.max(1, Math.min(300, parsePositiveInt(body?.maxMatches) || 220));
+    const maxMatches = Math.max(1, Math.min(40, parsePositiveInt(body?.maxMatches) || 20));
     const now = new Date();
     const scheduledMatches = await runScheduledMatches(supabaseAdmin, { now, maxMatches });
 
@@ -52,6 +35,10 @@ export async function POST(request: NextRequest) {
       scheduledMatches
     });
   } catch (error) {
-    return NextResponse.json({ ok: false, error: toErrorText(error) }, { status: 500 });
+    const apiError = toApiError(error);
+    return NextResponse.json(
+      { ok: false, error: apiError.status === 500 ? toErrorText(error) : apiError.message },
+      { status: apiError.status }
+    );
   }
 }

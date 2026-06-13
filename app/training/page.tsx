@@ -72,41 +72,10 @@ export default function TrainingCenter() {
     fetchTeamData();
   }, []);
 
-  const registerExpenseTx = async (params: {
-    teamId: string;
-    ownerId?: string | null;
-    concept: string;
-    amount: number;
-  }) => {
-    const monto = -Math.abs(params.amount);
-    const payloadWithDate = {
-      team_id: params.teamId,
-      concepto: params.concept,
-      monto,
-      tipo: 'GASTO',
-      fecha: new Date().toISOString()
-    };
-
-    let payload: Record<string, unknown> = payloadWithDate;
-    let { error } = await supabase.from('finance_transactions').insert(payload);
-    if (!error) return;
-
-    const maybeFechaError = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (maybeFechaError.includes('fecha')) {
-      payload = { team_id: params.teamId, concepto: params.concept, monto, tipo: 'GASTO' };
-      const retryNoFecha = await supabase.from('finance_transactions').insert(payload);
-      if (!retryNoFecha.error) return;
-      error = retryNoFecha.error;
-    }
-
-    const ownerErr = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (params.ownerId && ownerErr.includes('owner_id')) {
-      const retry = await supabase.from('finance_transactions').insert({ ...payload, owner_id: params.ownerId });
-      if (!retry.error) return;
-      error = retry.error;
-    }
-
-    throw new Error(error.message || 'No se pudo registrar el gasto financiero.');
+  const getAuthHeader = async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session?.access_token) throw new Error('Sesión no disponible.');
+    return { Authorization: `Bearer ${data.session.access_token}` };
   };
 
   const errText = (err: unknown) => {
@@ -143,7 +112,7 @@ export default function TrainingCenter() {
       setPositionOverallConfig(dynamicPositionConfig);
 
       if (roster) {
-        const processedPlayers = roster.map((p: any) => ({
+        const processedPlayers = (roster as Player[]).map((p) => ({
           ...p,
           position: getBestRoleForPlayer(p, dynamicPositionConfig),
           overall: calculateWeightedOverallForBestRole(p, dynamicPositionConfig),
@@ -197,37 +166,28 @@ export default function TrainingCenter() {
 
     setLoadingFocusId(player.id);
 
-    const newStamina = player.stamina - STAMINA_COST;
-    const newEntrenos = player.entrenos_semanales + 1;
-    const newCash = team.presupuesto - cost;
-
     try {
-      const { error: playerUpdateError } = await supabase
-        .from('players')
-        .update({ training_focus: attr, stamina: newStamina, entrenos_semanales: newEntrenos })
-        .eq('id', player.id);
-      if (playerUpdateError) throw playerUpdateError;
+      const authHeader = await getAuthHeader();
+      const response = await fetch('/api/training/focus', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ playerId: player.id, focus: attr })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            result?: {
+              new_budget?: number;
+              new_stamina?: number;
+              weekly_trainings?: number;
+            };
+          }
+        | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo asignar el entrenamiento.');
 
-      const { error: budgetError } = await supabase
-        .from('clubes')
-        .update({ presupuesto: newCash })
-        .eq('id', team.id);
-      if (budgetError) throw budgetError;
-
-      try {
-        await registerExpenseTx({
-          teamId: team.id,
-          ownerId: team.owner_id,
-          concept: `Gimnasio: ${player.name} (Foco: ${TRAINABLE_ATTRIBUTE_LABELS[attr]})`,
-          amount: cost
-        });
-      } catch (txError) {
-        await Promise.all([
-          supabase.from('players').update({ training_focus: player.training_focus, stamina: player.stamina, entrenos_semanales: player.entrenos_semanales }).eq('id', player.id),
-          supabase.from('clubes').update({ presupuesto: team.presupuesto }).eq('id', team.id)
-        ]);
-        throw txError;
-      }
+      const newStamina = Number(payload?.result?.new_stamina ?? player.stamina - STAMINA_COST);
+      const newEntrenos = Number(payload?.result?.weekly_trainings ?? player.entrenos_semanales + 1);
+      const newCash = Number(payload?.result?.new_budget ?? team.presupuesto - cost);
 
       setSelectedFocus((prev) => ({ ...prev, [player.id]: attr }));
       setTeam({
@@ -255,31 +215,23 @@ export default function TrainingCenter() {
     if (team.presupuesto < cost) { setMessage('❌ Sin dinero para el fisio.'); return; }
 
     setLoadingHealId(player.id);
-    const newCash = team.presupuesto - cost;
 
     try {
-      const { error: playerHealError } = await supabase.from('players').update({ stamina: 100 }).eq('id', player.id);
-      if (playerHealError) throw playerHealError;
+      const authHeader = await getAuthHeader();
+      const response = await fetch('/api/training/heal', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ playerId: player.id })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; result?: { new_budget?: number; new_stamina?: number } }
+        | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo aplicar el fisio.');
 
-      const { error: budgetUpdateError } = await supabase.from('clubes').update({ presupuesto: newCash }).eq('id', team.id);
-      if (budgetUpdateError) throw budgetUpdateError;
+      const newCash = Number(payload?.result?.new_budget ?? team.presupuesto - cost);
+      const newStamina = Number(payload?.result?.new_stamina ?? 100);
 
-      try {
-        await registerExpenseTx({
-          teamId: team.id,
-          ownerId: team.owner_id,
-          concept: `Fisio: ${player.name} (Recuperación)`,
-          amount: cost
-        });
-      } catch (txError) {
-        await Promise.all([
-          supabase.from('players').update({ stamina: player.stamina }).eq('id', player.id),
-          supabase.from('clubes').update({ presupuesto: team.presupuesto }).eq('id', team.id)
-        ]);
-        throw txError;
-      }
-
-      const updatedPlayers = team.players.map((p) => (p.id === player.id ? { ...p, stamina: 100 } : p));
+      const updatedPlayers = team.players.map((p) => (p.id === player.id ? { ...p, stamina: newStamina } : p));
       setTeam({ ...team, presupuesto: newCash, players: updatedPlayers });
       setMessage(`💊 ${player.name} recuperado.`);
     } catch (err: unknown) {

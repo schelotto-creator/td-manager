@@ -13,8 +13,7 @@ const isAuthorized = (request: NextRequest) => {
   if (!secret) return process.env.NODE_ENV !== 'production';
   const header = request.headers.get('authorization');
   const bearer = header?.startsWith('Bearer ') ? header.slice(7).trim() : null;
-  const query = request.nextUrl.searchParams.get('secret');
-  return bearer === secret || query === secret;
+  return bearer === secret;
 };
 
 export async function GET(request: NextRequest) {

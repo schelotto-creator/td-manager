@@ -295,7 +295,6 @@ export default function TeamManagement() {
   const router = useRouter();
   const [teamId, setTeamId] = useState<string | null>(null);
   const [teamCash, setTeamCash] = useState<number | null>(null);
-  const [ownerId, setOwnerId] = useState<string | null>(null);
   const [players, setPlayers] = useState<Player[]>([]);
   const [filteredPlayers, setFilteredPlayers] = useState<Player[]>([]);
   const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
@@ -343,8 +342,6 @@ export default function TeamManagement() {
     try {
         const { data: { user } } = await supabase.auth.getUser();
         if (!user) { router.push('/login'); return; }
-        setOwnerId(user.id);
-
         const { data: myTeam } = await supabase.from('clubes').select('id, league_id, presupuesto').eq('owner_id', user.id).single();
         if (!myTeam) { router.push('/onboarding'); return; }
         setTeamId(myTeam.id);
@@ -390,7 +387,7 @@ export default function TeamManagement() {
     } catch (e) { console.error(e); } finally { setLoading(false); }
   };
 
-  const calculateRealOverall = (player: any, config: PositionOverallConfig = positionOverallConfig) => {
+  const calculateRealOverall = (player: Player, config: PositionOverallConfig = positionOverallConfig) => {
       const baseOverall = calculateWeightedOverallForBestRole(player, config);
       return applyExperienceBonus(baseOverall, player.experience);
   };
@@ -401,11 +398,13 @@ export default function TeamManagement() {
       if (positionFilter !== 'ALL') temp = temp.filter(p => p.position === positionFilter);
 
       temp.sort((a, b) => {
-          // @ts-ignore
-          if (a[sortConfig.key] < b[sortConfig.key]) return sortConfig.direction === 'asc' ? -1 : 1;
-          // @ts-ignore
-          if (a[sortConfig.key] > b[sortConfig.key]) return sortConfig.direction === 'asc' ? 1 : -1;
-          return 0;
+          const aValue = a[sortConfig.key];
+          const bValue = b[sortConfig.key];
+          const comparison =
+            typeof aValue === 'number' && typeof bValue === 'number'
+              ? aValue - bValue
+              : String(aValue ?? '').localeCompare(String(bValue ?? ''), 'es');
+          return sortConfig.direction === 'asc' ? comparison : -comparison;
       });
       setFilteredPlayers(temp);
   };
@@ -425,51 +424,24 @@ export default function TeamManagement() {
   const DIRECT_SALE_FACTOR = 0.8;
   const getDirectSaleValue = (ovr: number) => Math.floor(getMarketValue(ovr) * DIRECT_SALE_FACTOR);
 
-  const registerIncomeTx = async (params: {
-    teamId: string;
-    ownerId?: string | null;
-    concept: string;
-    amount: number;
-  }) => {
-    const monto = Math.abs(params.amount);
-    const basePayload = {
-      team_id: params.teamId,
-      concepto: params.concept,
-      monto,
-      tipo: 'INGRESO',
-      fecha: new Date().toISOString()
-    };
+  const getAuthHeader = async () => {
+    const { data, error } = await supabase.auth.getSession();
+    if (error || !data.session?.access_token) throw new Error('Sesión no disponible.');
+    return { Authorization: `Bearer ${data.session.access_token}` };
+  };
 
-    let { error } = await supabase.from('finance_transactions').insert(basePayload);
-    if (!error) return;
-
-    const maybeFechaError = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (maybeFechaError.includes('fecha')) {
-      const retryNoFecha = await supabase.from('finance_transactions').insert({
-        team_id: params.teamId,
-        concepto: params.concept,
-        monto,
-        tipo: 'INGRESO'
-      });
-      if (!retryNoFecha.error) return;
-      error = retryNoFecha.error;
-    }
-
-    const errorText = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (params.ownerId && errorText.includes('owner_id')) {
-      const retry = await supabase.from('finance_transactions').insert({
-        team_id: params.teamId,
-        concepto: params.concept,
-        monto,
-        tipo: 'INGRESO',
-        fecha: new Date().toISOString(),
-        owner_id: params.ownerId
-      });
-      if (!retry.error) return;
-      error = retry.error;
-    }
-
-    throw new Error(error.message || 'No se pudo registrar el ingreso financiero.');
+  const removePlayerOnServer = async (playerId: number, mode: 'release' | 'direct' | 'market') => {
+    const authHeader = await getAuthHeader();
+    const response = await fetch('/api/roster/remove', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeader },
+      body: JSON.stringify({ playerId, mode })
+    });
+    const payload = (await response.json().catch(() => null)) as
+      | { error?: string; salePrice?: number; result?: { new_budget?: number } }
+      | null;
+    if (!response.ok) throw new Error(payload?.error || 'No se pudo actualizar la plantilla.');
+    return payload;
   };
 
   const releasePlayer = async (player: Player) => {
@@ -485,14 +457,7 @@ export default function TeamManagement() {
 
     setReleasingId(player.id);
     try {
-      const { error } = await supabase
-        .from('players')
-        .update({ team_id: null, lineup_pos: null })
-        .eq('id', player.id)
-        .eq('team_id', teamId);
-
-      if (error) throw error;
-
+      await removePlayerOnServer(player.id, 'release');
       setPlayers(prev => prev.filter(p => p.id !== player.id));
       setSelectedPlayer(null);
       setMessage({ text: `✅ ${player.name} ha sido liberado.`, tone: 'success' });
@@ -518,50 +483,16 @@ export default function TeamManagement() {
     const modeLabel = mode === 'direct' ? 'venta directa' : 'venta al mercado';
     if (!confirm(`¿Confirmar ${modeLabel} de ${player.name} por ${new Intl.NumberFormat('es-ES').format(salePrice)} €?\nPasará al Mercado como agente libre.`)) return;
 
-    const previousCash = teamCash;
-    const newCash = previousCash + salePrice;
-    const previousLineup = player.lineup_pos || 'BENCH';
-
     setSellingId(player.id);
     try {
-      const { error: playerError } = await supabase
-        .from('players')
-        .update({ team_id: null, lineup_pos: null })
-        .eq('id', player.id)
-        .eq('team_id', teamId);
-
-      if (playerError) throw playerError;
-
-      const { error: budgetError } = await supabase
-        .from('clubes')
-        .update({ presupuesto: newCash })
-        .eq('id', teamId);
-
-      if (budgetError) {
-        await supabase.from('players').update({ team_id: teamId, lineup_pos: previousLineup }).eq('id', player.id);
-        throw budgetError;
-      }
-
-      try {
-        await registerIncomeTx({
-          teamId,
-          ownerId,
-          concept: mode === 'direct' ? `Mercado: Venta directa ${player.name}` : `Mercado: Venta ${player.name}`,
-          amount: salePrice
-        });
-      } catch (txError) {
-        await Promise.all([
-          supabase.from('clubes').update({ presupuesto: previousCash }).eq('id', teamId),
-          supabase.from('players').update({ team_id: teamId, lineup_pos: previousLineup }).eq('id', player.id)
-        ]);
-        throw txError;
-      }
-
+      const payload = await removePlayerOnServer(player.id, mode);
+      const persistedSalePrice = Number(payload?.salePrice ?? salePrice);
+      const newCash = Number(payload?.result?.new_budget ?? teamCash + persistedSalePrice);
       setTeamCash(newCash);
       setPlayers(prev => prev.filter(p => p.id !== player.id));
       setSelectedPlayer(null);
       setMessage({
-        text: `✅ ${mode === 'direct' ? 'Venta directa' : 'Venta'}: ${player.name} (+${new Intl.NumberFormat('es-ES').format(salePrice)} €)`,
+        text: `✅ ${mode === 'direct' ? 'Venta directa' : 'Venta'}: ${player.name} (+${new Intl.NumberFormat('es-ES').format(persistedSalePrice)} €)`,
         tone: 'success'
       });
     } catch (err) {

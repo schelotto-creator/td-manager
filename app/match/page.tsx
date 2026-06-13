@@ -9,10 +9,8 @@ import {
   type EnginePlayer,
   type EngineTactics,
   type LineupPlayer,
-  type MatchSimulationResult,
   type MatchEvent,
-  type TeamGamePlan,
-  generateMatchSimulation
+  type TeamGamePlan
 } from '@/lib/match-engine';
 import {
   DEFAULT_MATCH_SIMULATOR_SETTINGS,
@@ -24,11 +22,6 @@ import {
   getDefaultPositionOverallConfig,
   type PositionOverallConfig
 } from '@/lib/position-overall-config';
-import { applyExperienceDelta, buildMatchExperienceDeltas } from '@/lib/player-progression';
-import {
-  hasMissingStandingsColumns,
-  shouldFallbackFromFinalizeMatchRpc
-} from '@/lib/finalize-match-compat';
 import {
   collectRotationPlayerIds,
   fetchSimulationRosters,
@@ -200,13 +193,6 @@ type PlayerGameStat = {
   efficiency: number;
 };
 
-type FinalizeMatchRpcResponse = {
-  status?: string;
-  warning?: string | null;
-  stats_rows_in_payload?: number;
-  stats_rows_saved?: number;
-};
-
 const toErrorText = (error: unknown) => {
   if (!error) return 'Error desconocido';
   if (typeof error === 'string') return error;
@@ -373,185 +359,6 @@ const pickLeaderForMetric = (
   const top = sorted[0];
   if (!top || Number(top[metric] || 0) <= 0) return null;
   return top;
-};
-
-const buildPayloadFromTemplate = (
-  rows: PlayerGameStat[],
-  template: {
-    match: string;
-    player: string;
-    team?: string;
-    points: string;
-    rebounds: string;
-    assists: string;
-    turnovers?: string;
-    fouls_committed?: string;
-    fouls_received?: string;
-    efficiency?: string;
-  },
-  matchId: number
-) =>
-  rows.map((row) => {
-    const payload: Record<string, unknown> = {
-      [template.match]: matchId,
-      [template.player]: row.player_id,
-      [template.points]: row.points,
-      [template.rebounds]: row.rebounds,
-      [template.assists]: row.assists
-    };
-    if (template.team) payload[template.team] = row.team_id;
-    if (template.turnovers) payload[template.turnovers] = row.turnovers;
-    if (template.fouls_committed) payload[template.fouls_committed] = row.fouls_committed;
-    if (template.fouls_received) payload[template.fouls_received] = row.fouls_received;
-    if (template.efficiency) payload[template.efficiency] = row.efficiency;
-    return payload;
-  });
-
-const persistPlayerStats = async (matchId: number, rows: PlayerGameStat[]) => {
-  if (rows.length === 0) return { ok: true as const };
-
-  const templates = [
-    {
-      match: 'match_id',
-      player: 'player_id',
-      points: 'points',
-      rebounds: 'rebounds',
-      assists: 'assists'
-    },
-    {
-      match: 'match_id',
-      player: 'player_id',
-      team: 'team_id',
-      points: 'points',
-      rebounds: 'rebounds',
-      assists: 'assists',
-      turnovers: 'turnovers',
-      fouls_committed: 'fouls_committed',
-      fouls_received: 'fouls_received',
-      efficiency: 'efficiency'
-    },
-    {
-      match: 'match_id',
-      player: 'player_id',
-      team: 'team_id',
-      points: 'pts',
-      rebounds: 'reb',
-      assists: 'ast',
-      turnovers: 'tov',
-      fouls_committed: 'pf',
-      fouls_received: 'fouls_received',
-      efficiency: 'val'
-    },
-    {
-      match: 'match_id',
-      player: 'player_id',
-      team: 'team_id',
-      points: 'puntos',
-      rebounds: 'rebotes',
-      assists: 'asistencias',
-      turnovers: 'perdidas',
-      fouls_committed: 'faltas',
-      fouls_received: 'faltas_recibidas',
-      efficiency: 'valoracion'
-    },
-    {
-      match: 'game_id',
-      player: 'player_id',
-      team: 'team_id',
-      points: 'points',
-      rebounds: 'rebounds',
-      assists: 'assists',
-      turnovers: 'turnovers',
-      fouls_committed: 'fouls_committed',
-      fouls_received: 'fouls_received',
-      efficiency: 'efficiency'
-    },
-    {
-      match: 'partido_id',
-      player: 'jugador_id',
-      team: 'equipo_id',
-      points: 'puntos',
-      rebounds: 'rebotes',
-      assists: 'asistencias',
-      turnovers: 'perdidas',
-      fouls_committed: 'faltas',
-      fouls_received: 'faltas_recibidas',
-      efficiency: 'valoracion'
-    }
-  ] as const;
-
-  let lastError = 'No se pudo inferir esquema de player_stats.';
-
-  for (const template of templates) {
-    const payload = buildPayloadFromTemplate(rows, template, matchId);
-    const insertRes = await supabase.from('player_stats').insert(payload);
-    if (!insertRes.error) return { ok: true as const };
-    lastError = toErrorText(insertRes.error);
-
-    const duplicate = lastError.toLowerCase().includes('duplicate key');
-    if (!duplicate) continue;
-
-    const conflictKeys = [`${template.match},${template.player}`, `${template.player},${template.match}`];
-    for (const onConflict of conflictKeys) {
-      const upsertRes = await supabase.from('player_stats').upsert(payload, { onConflict });
-      if (!upsertRes.error) return { ok: true as const };
-      lastError = toErrorText(upsertRes.error);
-    }
-  }
-
-  // Fallback: algunos esquemas almacenan stats agregadas por jugador y no por partido.
-  const aggregatedPayload = rows.map((row) => ({
-    player_id: row.player_id,
-    team_id: row.team_id,
-    games_played: 1,
-    ppg: row.points,
-    rpg: row.rebounds,
-    apg: row.assists,
-    efficiency: row.efficiency
-  }));
-
-  const fallbackConflicts = ['player_id,team_id', 'player_id'];
-  for (const onConflict of fallbackConflicts) {
-    const fallbackRes = await supabase.from('player_stats').upsert(aggregatedPayload, { onConflict });
-    if (!fallbackRes.error) return { ok: true as const };
-    lastError = toErrorText(fallbackRes.error);
-  }
-
-  return { ok: false as const, error: lastError };
-};
-
-const applyMatchExperienceProgression = async (
-  events: MatchEvent[],
-  statsRows: PlayerGameStat[]
-) => {
-  const deltas = buildMatchExperienceDeltas(events, statsRows);
-  if (deltas.length === 0) return null;
-
-  const deltaByPlayerId = new Map(deltas.map((entry) => [entry.playerId, entry.delta]));
-  const playerIds = deltas.map((entry) => entry.playerId);
-  const { data: playersData, error: playersError } = await supabase
-    .from('players')
-    .select('id, experience')
-    .in('id', playerIds);
-
-  if (playersError) {
-    throw new Error(`No se pudo cargar experiencia de jugadores: ${toErrorText(playersError)}`);
-  }
-
-  for (const player of (playersData || []) as Array<{ id: number; experience?: number | null }>) {
-    const { error } = await supabase
-      .from('players')
-      .update({
-        experience: applyExperienceDelta(player.experience, deltaByPlayerId.get(Number(player.id)) || 0)
-      })
-      .eq('id', player.id);
-
-    if (error) {
-      throw new Error(`No se pudo guardar experiencia de jugadores: ${toErrorText(error)}`);
-    }
-  }
-
-  return `${playerIds.length} jugadores ganaron experiencia tras el partido.`;
 };
 
 const toEnginePlayer = (player: MatchRosterPlayerRow): EnginePlayer => ({
@@ -1172,188 +979,42 @@ function MatchEnginePageContent() {
     setIsLive(true);
   }, [currentEventIndex, currentMatch, isFinished, isLive, matchEvents.length, persisting]);
 
-  const applyRegularSeasonStandings = async (match: MatchRow, finalHome: number, finalAway: number) => {
-    if ((match.fase || 'REGULAR').toUpperCase() !== 'REGULAR') return;
-
-    const { data: clubs, error } = await supabase
-      .from('clubes')
-      .select('id, pj, v, d, pts')
-      .in('id', [match.home_team_id, match.away_team_id]);
-
-    if (error && hasMissingStandingsColumns(error)) {
-      return;
-    }
-    if (error || !clubs || clubs.length < 2) {
-      throw new Error('No se pudo actualizar la clasificación.');
-    }
-
-    const homeClub = clubs.find((club) => String(club.id) === String(match.home_team_id));
-    const awayClub = clubs.find((club) => String(club.id) === String(match.away_team_id));
-    if (!homeClub || !awayClub) throw new Error('Equipos no encontrados para clasificación.');
-
-    const homeWon = finalHome > finalAway;
-    const awayWon = finalAway > finalHome;
-
-    const homeUpdate = {
-      pj: Number(homeClub.pj || 0) + 1,
-      v: Number(homeClub.v || 0) + (homeWon ? 1 : 0),
-      d: Number(homeClub.d || 0) + (awayWon ? 1 : 0),
-      pts: Number(homeClub.pts || 0) + (homeWon ? 2 : 1)
-    };
-
-    const awayUpdate = {
-      pj: Number(awayClub.pj || 0) + 1,
-      v: Number(awayClub.v || 0) + (awayWon ? 1 : 0),
-      d: Number(awayClub.d || 0) + (homeWon ? 1 : 0),
-      pts: Number(awayClub.pts || 0) + (awayWon ? 2 : 1)
-    };
-
-    const [{ error: homeErr }, { error: awayErr }] = await Promise.all([
-      supabase.from('clubes').update(homeUpdate).eq('id', homeClub.id),
-      supabase.from('clubes').update(awayUpdate).eq('id', awayClub.id)
-    ]);
-
-    if (homeErr || awayErr) {
-      throw new Error(homeErr?.message || awayErr?.message || 'No se pudo guardar la clasificación.');
-    }
-  };
-
-  const fetchPersistedMatch = async (matchId: number) => {
-    const { data, error } = await supabase.from('matches').select('*').eq('id', matchId).maybeSingle();
-    if (error || !data) {
-      throw new Error(error?.message || 'No se pudo recuperar el partido tras guardarlo.');
-    }
-    return data as MatchRow;
-  };
-
-  const finalizeMatchPersistence = async (match: MatchRow, simulation: MatchSimulationResult) => {
-    const gameStatsRows = buildPlayerGameStatsFromEvents(
-      simulation.events,
-      homeRoster,
-      awayRoster,
-      match.home_team_id,
-      match.away_team_id
-    );
-
-    const { data: rpcData, error: rpcError } = await supabase.rpc('finalize_match_transaction', {
-      p_match_id: match.id,
-      p_home_score: simulation.finalScore.home,
-      p_away_score: simulation.finalScore.away,
-      p_play_by_play: simulation.events,
-      p_player_stats: gameStatsRows
-    });
-
-    if (rpcError) {
-      if (!shouldFallbackFromFinalizeMatchRpc(rpcError)) {
-        throw new Error(`No se pudo cerrar el partido con transacción: ${toErrorText(rpcError)}`);
-      }
-
-      const { data: updatedMatch, error: matchUpdateError } = await supabase
-        .from('matches')
-        .update({
-          played: true,
-          home_score: simulation.finalScore.home,
-          away_score: simulation.finalScore.away,
-          play_by_play: simulation.events
-        })
-        .eq('id', match.id)
-        .select('*')
-        .single();
-
-      if (matchUpdateError || !updatedMatch) {
-        throw new Error(matchUpdateError?.message || 'No se pudo guardar el resultado del partido.');
-      }
-
-      const fallbackWarnings = ['La RPC transaccional no está disponible o no es compatible con el esquema actual. Se usó guardado legacy.'];
-      const statsSave = await persistPlayerStats(match.id, gameStatsRows);
-      if (!statsSave.ok) {
-        fallbackWarnings.push(`Stats de jugador no guardadas: ${statsSave.error}`);
-      }
-
-      await applyRegularSeasonStandings(match, simulation.finalScore.home, simulation.finalScore.away);
-
-      try {
-        const progressionWarning = await applyMatchExperienceProgression(simulation.events, gameStatsRows);
-        if (progressionWarning) fallbackWarnings.push(progressionWarning);
-      } catch (progressionError) {
-        fallbackWarnings.push(toErrorText(progressionError));
-      }
-
-      return {
-        updatedMatch: updatedMatch as MatchRow,
-        warning: fallbackWarnings.join(' ')
-      };
-    }
-
-    const rpcPayload = isRecord(rpcData) ? (rpcData as FinalizeMatchRpcResponse) : {};
-    const status = typeof rpcPayload.status === 'string' ? rpcPayload.status : 'ok';
-    const warning = typeof rpcPayload.warning === 'string' ? rpcPayload.warning : null;
-
-    if (status !== 'ok' && status !== 'already_played') {
-      throw new Error(`Respuesta inesperada al cerrar partido: ${status}`);
-    }
-
-    const updatedMatch = await fetchPersistedMatch(match.id);
-    if (status === 'already_played') {
-      return {
-        updatedMatch,
-        warning:
-          warning ||
-          'El partido ya estaba finalizado por otro proceso. Se mostró el resultado ya guardado.'
-      };
-    }
-
-    try {
-      const progressionWarning = await applyMatchExperienceProgression(simulation.events, gameStatsRows);
-      return {
-        updatedMatch,
-        warning: [warning, progressionWarning].filter(Boolean).join(' ').trim() || null
-      };
-    } catch (progressionError) {
-      return {
-        updatedMatch,
-        warning: [warning, toErrorText(progressionError)].filter(Boolean).join(' ').trim() || null
-      };
-    }
-  };
-
-  const advancePlayoffsAfterMatch = async (matchId: number) => {
+  const finalizeMatchPersistence = async (match: MatchRow) => {
     const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
     if (sessionError) {
-      return `No se pudo obtener la sesión para avanzar playoffs: ${sessionError.message}`;
+      throw new Error(`No se pudo validar la sesión: ${sessionError.message}`);
     }
 
     const accessToken = sessionData.session?.access_token;
     if (!accessToken) {
-      return 'No se encontró token de sesión para avanzar playoffs.';
+      throw new Error('No se encontró token de sesión.');
     }
 
-    const response = await fetch('/api/competition/advance-playoffs', {
+    const response = await fetch('/api/matches/finalize', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
       },
-      body: JSON.stringify({ matchId })
+      body: JSON.stringify({ matchId: match.id })
     });
 
     const payload = (await response.json().catch(() => null)) as
       | {
           ok?: boolean;
           error?: string;
-          result?: { message?: string; createdMatches?: number; status?: 'ok' | 'skipped' };
+          match?: MatchRow;
         }
       | null;
 
-    if (!response.ok || !payload?.ok) {
-      return payload?.error || 'No se pudo avanzar la competición tras cerrar el partido.';
+    if (!response.ok || !payload?.ok || !payload.match) {
+      throw new Error(payload?.error || 'No se pudo cerrar el partido.');
     }
 
-    if (payload.result?.status === 'ok' && payload.result?.message) {
-      return payload.result.message;
-    }
-
-    return null;
+    return {
+      updatedMatch: payload.match,
+      warning: null
+    };
   };
 
   const prepareSimulationIfNeeded = async () => {
@@ -1375,38 +1036,13 @@ function MatchEnginePageContent() {
 
     setPersisting(true);
     try {
-      const result = generateMatchSimulation({
-        homeRoster,
-        awayRoster,
-        homeTactics,
-        awayTactics,
-        homeGamePlan: extractTeamGamePlan(currentMatch.home_tactics, homeTeam),
-        awayGamePlan: extractTeamGamePlan(currentMatch.away_tactics, awayTeam),
-        homeTeamName: homeTeam.nombre,
-        awayTeamName: awayTeam.nombre,
-        homeTeamColor: homeTeam.color_primario || '#3b82f6',
-        awayTeamColor: awayTeam.color_primario || '#ef4444',
-        settings: simulatorSettings,
-        positionOverallConfig
-      });
-
-      setMatchEvents(result.events);
-      finalPartialsRef.current = result.partials;
-      setDisplayedPartials(result.partials);
-      setDisplayedHomeLineup(result.finalHomeLineup);
-      setDisplayedAwayLineup(result.finalAwayLineup);
-
-      const persistence = await finalizeMatchPersistence(currentMatch, result);
-      const progressionWarning = await advancePlayoffsAfterMatch(currentMatch.id);
-      setCurrentMatch(persistence.updatedMatch);
-      setWarning([persistence.warning, progressionWarning].filter(Boolean).join(' ').trim() || null);
-      setDisplayedHomeScore(0);
-      setDisplayedAwayScore(0);
-      setDisplayedQuarter('Q1');
-      setDisplayedTime(formatClockFromSeconds(simulatorSettings.quarterDurationSeconds));
-      setCurrentEventIndex(0);
-      setLogs([]);
-      setIsFinished(false);
+      const persistence = await finalizeMatchPersistence(currentMatch);
+      const replaySnapshot = buildReplaySnapshot(
+        persistence.updatedMatch,
+        simulatorSettings.quarterDurationSeconds
+      );
+      applyReplaySnapshot(persistence.updatedMatch, replaySnapshot);
+      setWarning(persistence.warning);
       setLoadError(null);
       return true;
     } catch (error) {

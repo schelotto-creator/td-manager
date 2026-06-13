@@ -169,7 +169,7 @@ begin
   )
   select
     p_match_id,
-    (stat->>'player_id')::integer,
+    (stat->>'player_id')::bigint,
     nullif(stat->>'team_id', '')::uuid,
     coalesce((stat->>'points')::integer, 0),
     coalesce((stat->>'rebounds')::integer, 0),
@@ -193,7 +193,10 @@ begin
 end;
 $$;
 
+revoke all on function public.finalize_match_transaction(bigint, integer, integer, jsonb, jsonb)
+from public, anon, authenticated;
+
 grant execute on function public.finalize_match_transaction(bigint, integer, integer, jsonb, jsonb)
-to anon, authenticated, service_role;
+to service_role;
 
 notify pgrst, 'reload schema';

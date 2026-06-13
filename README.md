@@ -76,6 +76,7 @@ Aplica las migraciones de `db/migrations`, en especial:
 - `20260314_prepare_scheduled_match_replays.sql`
 - `20260304_add_github_integration_config.sql`
 - `20260613_align_match_simulator_schema.sql`
+- `20260613_secure_critical_operations.sql`
 
 Esa migración añade:
 
@@ -85,3 +86,12 @@ Esa migración añade:
 - Función `run_weekly_maintenance(boolean)` para el cierre semanal (forma y entrenos).
 
 La migración `20260427_add_match_seasons.sql` añade `season_number` a `matches`: los partidos existentes quedan como Temporada 1 y los nuevos calendarios se generan como Temporada 2, 3, etc. El cierre de temporada ya no borra partidos anteriores.
+
+`20260613_secure_critical_operations.sql` revoca el cierre de partidos para
+`anon` y `authenticated`, crea las tablas de configuración/mercado que falten
+y añade RPCs transaccionales para pujas, fichajes, ventas, entrenamiento,
+fisioterapia, scouting y talentos. Estas RPCs sólo pueden ejecutarse con
+`service_role`; las páginas cliente deben usar sus rutas `/api/*` autenticadas.
+
+Los endpoints de cron aceptan el secreto únicamente mediante
+`Authorization: Bearer <CRON_SECRET>`. No se admite el secreto en la URL.

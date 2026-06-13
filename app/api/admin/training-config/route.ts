@@ -1,16 +1,10 @@
-import { createClient } from '@supabase/supabase-js';
-import { NextResponse } from 'next/server';
+import { NextRequest, NextResponse } from 'next/server';
 import { DEFAULT_TRAINING_CONFIG, type TrainingConfig } from '@/lib/player-training';
+import { requireAdminUser, toApiError } from '@/lib/server-auth';
 
-const getAdmin = () =>
-  createClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.SUPABASE_SERVICE_ROLE_KEY!
-  );
-
-export async function GET() {
+export async function GET(req: NextRequest) {
   try {
-    const supabase = getAdmin();
+    const { supabaseAdmin: supabase } = await requireAdminUser(req);
     const { data, error } = await supabase
       .from('training_config')
       .select('settings')
@@ -24,25 +18,31 @@ export async function GET() {
       : DEFAULT_TRAINING_CONFIG;
 
     return NextResponse.json({ config });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Unknown error' }, { status: 500 });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return NextResponse.json({ error: apiError.message }, { status: apiError.status });
   }
 }
 
-export async function POST(req: Request) {
+export async function POST(req: NextRequest) {
   try {
+    const { supabaseAdmin: supabase } = await requireAdminUser(req);
     const body = await req.json();
-    const config: TrainingConfig = body.config;
+    const config = body?.config as TrainingConfig | undefined;
 
     if (
+      !config ||
       typeof config.baseGain !== 'number' ||
+      !Number.isFinite(config.baseGain) ||
+      config.baseGain < 0 ||
       typeof config.drDivisor !== 'number' ||
+      !Number.isFinite(config.drDivisor) ||
+      config.drDivisor <= 0 ||
       typeof config.ageMultipliers?.u22 !== 'number'
     ) {
       return NextResponse.json({ error: 'Invalid config shape' }, { status: 400 });
     }
 
-    const supabase = getAdmin();
     const { error } = await supabase
       .from('training_config')
       .upsert({ id: 1, settings: config }, { onConflict: 'id' });
@@ -50,7 +50,8 @@ export async function POST(req: Request) {
     if (error) throw error;
 
     return NextResponse.json({ ok: true });
-  } catch (err: any) {
-    return NextResponse.json({ error: err?.message || 'Unknown error' }, { status: 500 });
+  } catch (error) {
+    const apiError = toApiError(error);
+    return NextResponse.json({ error: apiError.message }, { status: apiError.status });
   }
 }

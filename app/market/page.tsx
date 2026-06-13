@@ -46,6 +46,11 @@ type Team = {
   cash: number;
 };
 
+type MarketListingQueryRow = Omit<MarketListingWithPlayer, 'seller_name' | 'buyer_name'> & {
+  seller?: { nombre?: string | null } | null;
+  buyer?: { nombre?: string | null } | null;
+};
+
 const ALL_STATS = [...SCOUT_STATS];
 const SCOUT_COST = 15000;
 const FLAGS: Record<string, string> = {
@@ -62,7 +67,6 @@ const FLAGS: Record<string, string> = {
 
 export default function TransferMarket() {
   const router = useRouter();
-  const [ownerId, setOwnerId] = useState<string | null>(null);
   const [myTeam, setMyTeam] = useState<Team | null>(null);
   const [freeAgents, setFreeAgents] = useState<Player[]>([]);
   const [loadingId, setLoadingId] = useState<number | null>(null);
@@ -96,8 +100,6 @@ export default function TransferMarket() {
   const loadMarketData = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { router.push('/login'); return; }
-    setOwnerId(user.id);
-
     const [{ data: teamsData, error: teamError }, { data: mData, error: managerError }, dynamicPositionConfig] = await Promise.all([
       supabase.from('clubes').select('id, nombre, presupuesto').eq('owner_id', user.id).limit(1),
       supabase.from('managers').select('*').eq('owner_id', user.id).maybeSingle(),
@@ -173,7 +175,7 @@ export default function TransferMarket() {
         .eq('status', 'active')
         .order('ends_at', { ascending: true });
 
-      const enriched = ((allListings ?? []) as any[]).map((row) => ({
+      const enriched = ((allListings ?? []) as unknown as MarketListingQueryRow[]).map((row) => ({
         ...row,
         seller_name: row.seller?.nombre ?? 'Desconocido',
         buyer_name: row.buyer?.nombre ?? null
@@ -185,9 +187,9 @@ export default function TransferMarket() {
       const listedIds = new Set(enriched.map((l) => l.player_id));
       const { data: roster } = await supabase.from('players').select('*').eq('team_id', teamData.id);
       setSellableRoster(
-        ((roster ?? []) as any[])
-          .filter((p: any) => !listedIds.has(p.id))
-          .map((p: any) => ({
+        ((roster ?? []) as Player[])
+          .filter((p) => !listedIds.has(p.id))
+          .map((p) => ({
             ...p,
             position: getBestRoleForPlayer(p, dynamicPositionConfig),
             overall: calculateRealOverall(p, dynamicPositionConfig)
@@ -265,51 +267,6 @@ export default function TransferMarket() {
     }
   };
 
-  const registerExpenseTx = async (params: {
-    teamId: string;
-    ownerId?: string | null;
-    concept: string;
-    amount: number;
-  }) => {
-    const monto = -Math.abs(params.amount);
-    const payloadWithDate = {
-      team_id: params.teamId,
-      concepto: params.concept,
-      monto,
-      tipo: 'GASTO',
-      fecha: new Date().toISOString()
-    };
-
-    let payload: Record<string, unknown> = payloadWithDate;
-    let { error } = await supabase.from('finance_transactions').insert(payload);
-    if (!error) return;
-
-    const maybeFechaError = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (maybeFechaError.includes('fecha')) {
-      payload = {
-        team_id: params.teamId,
-        concepto: params.concept,
-        monto,
-        tipo: 'GASTO'
-      };
-      const retryNoFecha = await supabase.from('finance_transactions').insert(payload);
-      if (!retryNoFecha.error) return;
-      error = retryNoFecha.error;
-    }
-
-    const ownerErr = `${error.message || ''} ${error.details || ''}`.toLowerCase();
-    if (params.ownerId && ownerErr.includes('owner_id')) {
-      const retry = await supabase.from('finance_transactions').insert({
-        ...payload,
-        owner_id: params.ownerId
-      });
-      if (!retry.error) return;
-      error = retry.error;
-    }
-
-    throw new Error(error.message || 'No se pudo registrar el gasto financiero.');
-  };
-
   const errText = (error: unknown) =>
     error instanceof Error ? error.message : 'fallo inesperado';
 
@@ -320,61 +277,21 @@ export default function TransferMarket() {
 
     setLoadingId(player.id);
     try {
-      const newCash = myTeam.cash - player.price;
-      const { error: budgetError } = await supabase.from('clubes').update({ presupuesto: newCash }).eq('id', myTeam.id);
-      if (budgetError) throw budgetError;
+      const authHeader = await getAuthHeader();
+      const response = await fetch('/api/market/free-agent', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ playerId: player.id })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | { error?: string; result?: { new_budget?: number } }
+        | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo completar el fichaje.');
 
-      const { error: playerError } = await supabase
-        .from('players')
-        .update({ team_id: myTeam.id, lineup_pos: 'BENCH', position: player.position, overall: player.overall })
-        .eq('id', player.id);
-      if (playerError) {
-        await supabase.from('clubes').update({ presupuesto: myTeam.cash }).eq('id', myTeam.id);
-        throw playerError;
-      }
-
-      try {
-        await registerExpenseTx({
-          teamId: myTeam.id,
-          ownerId,
-          concept: `Mercado: Fichaje ${player.name}`,
-          amount: player.price
-        });
-      } catch (txError) {
-        await Promise.all([
-          supabase.from('clubes').update({ presupuesto: myTeam.cash }).eq('id', myTeam.id),
-          supabase.from('players').update({ team_id: null, lineup_pos: null }).eq('id', player.id)
-        ]);
-        throw txError;
-      }
-
+      const newCash = Number(payload?.result?.new_budget ?? myTeam.cash - player.price);
       setMyTeam({ ...myTeam, cash: newCash });
       setFreeAgents(prev => prev.filter(p => p.id !== player.id));
       setMessage(`✅ Fichaje completado: ${player.name}`);
-
-      // Award XP for signing — fire and forget
-      if (ownerId) {
-        const XP_SIGNING = 30;
-        void Promise.resolve(
-          supabase.from('managers')
-            .select('id, nivel, xp, xp_siguiente, puntos_talento')
-            .eq('owner_id', ownerId)
-            .maybeSingle()
-        ).then(({ data: mgr }) => {
-          if (!mgr) return;
-          let xp = Number((mgr as any).xp ?? 0) + XP_SIGNING;
-          let nivel = Number((mgr as any).nivel ?? 1);
-          let xpSiguiente = Number((mgr as any).xp_siguiente ?? nivel * nivel * 400);
-          let puntos_talento = Number((mgr as any).puntos_talento ?? 0);
-          while (xp >= xpSiguiente) {
-            xp -= xpSiguiente;
-            nivel++;
-            puntos_talento++;
-            xpSiguiente = nivel * nivel * 400;
-          }
-          return supabase.from('managers').update({ xp, nivel, xp_siguiente: xpSiguiente, puntos_talento }).eq('id', (mgr as any).id);
-        }).catch(() => {});
-      }
     } catch (error) {
       console.error(error);
       setMessage(`❌ No se pudo completar el fichaje: ${errText(error)}`);
@@ -387,7 +304,7 @@ export default function TransferMarket() {
   const getMissingStatsForPlayer = (playerId: number) => getMissingStats(playerId, talentoOjo, ojeos);
 
   const handleScoutPlayer = async (playerId: number) => {
-    if (!myTeam || !ownerId) return;
+    if (!myTeam) return;
     if (myTeam.cash < SCOUT_COST) { alert("❌ Fondos insuficientes."); return; }
     
     const missing = getMissingStatsForPlayer(playerId);
@@ -395,38 +312,27 @@ export default function TransferMarket() {
 
     setLoadingId(playerId);
     try {
-      const newlyScouted = [...missing].sort(() => 0.5 - Math.random()).slice(0, 2);
-      const updatedPlayerOjeos = [...(ojeos[playerId] || []), ...newlyScouted];
-      const newOjeosObj = { ...ojeos, [playerId]: updatedPlayerOjeos };
-      
-      const newCash = myTeam.cash - SCOUT_COST;
+      const authHeader = await getAuthHeader();
+      const response = await fetch('/api/market/scout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...authHeader },
+        body: JSON.stringify({ playerId })
+      });
+      const payload = (await response.json().catch(() => null)) as
+        | {
+            error?: string;
+            result?: {
+              new_budget?: number;
+              new_ojeos?: Record<string | number, string[]>;
+              new_stats?: string[];
+            };
+          }
+        | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo completar el ojeo.');
 
-      const { error: budgetError } = await supabase.from('clubes').update({ presupuesto: newCash }).eq('id', myTeam.id);
-      if (budgetError) throw budgetError;
-
-      const { error: managerError } = await supabase.from('managers').update({ 
-          ojeos: newOjeosObj,
-      }).eq('owner_id', ownerId);
-      if (managerError) {
-        await supabase.from('clubes').update({ presupuesto: myTeam.cash }).eq('id', myTeam.id);
-        throw managerError;
-      }
-
-      try {
-        await registerExpenseTx({
-          teamId: myTeam.id,
-          ownerId,
-          concept: 'Mercado: Ojeo de jugador',
-          amount: SCOUT_COST
-        });
-      } catch (txError) {
-        await Promise.all([
-          supabase.from('clubes').update({ presupuesto: myTeam.cash }).eq('id', myTeam.id),
-          supabase.from('managers').update({ ojeos }).eq('owner_id', ownerId)
-        ]);
-        throw txError;
-      }
-
+      const newCash = Number(payload?.result?.new_budget ?? myTeam.cash - SCOUT_COST);
+      const newOjeosObj = payload?.result?.new_ojeos ?? ojeos;
+      const newlyScouted = payload?.result?.new_stats ?? [];
       setMyTeam({ ...myTeam, cash: newCash });
       setOjeos(newOjeosObj);
       setMessage(`🔍 Ojeo completado: +${newlyScouted.length} stats`);
@@ -788,7 +694,7 @@ export default function TransferMarket() {
                         {!isFullyScouted ? (
                             <button
                                 onClick={() => handleScoutPlayer(player.id)}
-                                disabled={loadingId === player.id || !myTeam || !ownerId || (myTeam?.cash || 0) < SCOUT_COST}
+                                disabled={loadingId === player.id || !myTeam || (myTeam?.cash || 0) < SCOUT_COST}
                                 className={`py-3 rounded-xl font-black uppercase text-[10px] tracking-widest flex items-center justify-center gap-1.5 transition-all border ${(myTeam?.cash || 0) >= SCOUT_COST ? 'border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 hover:border-cyan-400' : 'border-slate-800/50 text-slate-600 bg-slate-900/50 cursor-not-allowed'}`}
                                 title={
                                   !myTeam

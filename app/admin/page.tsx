@@ -595,10 +595,21 @@ export default function AdminDashboard() {
     if (trainingConfigSaving) return;
     setTrainingConfigSaving(true);
     try {
-      const { error } = await supabase
-        .from('training_config')
-        .upsert({ id: 1, settings: trainingConfig }, { onConflict: 'id' });
-      if (error) throw error;
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session?.access_token) {
+        throw new Error('No se pudo validar la sesión de administrador.');
+      }
+
+      const response = await fetch('/api/admin/training-config', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`
+        },
+        body: JSON.stringify({ config: trainingConfig })
+      });
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo guardar la configuración.');
       addLog('🏋️ Configuración de entrenamiento guardada.');
     } catch (err: any) {
       addLog(`❌ Error guardando config de entrenamiento: ${err?.message || 'fallo desconocido'}`);
