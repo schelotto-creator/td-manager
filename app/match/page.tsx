@@ -29,6 +29,11 @@ import {
   hasMissingStandingsColumns,
   shouldFallbackFromFinalizeMatchRpc
 } from '@/lib/finalize-match-compat';
+import {
+  collectRotationPlayerIds,
+  fetchSimulationRosters,
+  type MatchRosterPlayerRow
+} from '@/lib/match-roster';
 
 type TeamId = string;
 type EscudoForma = 'circle' | 'square' | 'modern' | 'hexagon' | 'classic';
@@ -63,24 +68,6 @@ type MatchRow = {
   away_tactics?: unknown;
   play_by_play?: unknown;
   simulated_play_by_play?: unknown;
-};
-
-type RawPlayerRow = {
-  id: number;
-  name: string;
-  position: string;
-  overall: number;
-  shooting_2pt?: number | null;
-  shooting_3pt?: number | null;
-  defense?: number | null;
-  passing?: number | null;
-  rebounding?: number | null;
-  dribbling?: number | null;
-  speed?: number | null;
-  stamina?: number | null;
-  experience?: number | null;
-  forma?: number | null;
-  team_id: TeamId;
 };
 
 type ReplayLog = {
@@ -567,7 +554,7 @@ const applyMatchExperienceProgression = async (
   return `${playerIds.length} jugadores ganaron experiencia tras el partido.`;
 };
 
-const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
+const toEnginePlayer = (player: MatchRosterPlayerRow): EnginePlayer => ({
   id: player.id,
   name: player.name,
   position: player.position,
@@ -1002,20 +989,27 @@ function MatchEnginePageContent() {
         setHomeTeam(home);
         setAwayTeam(away);
 
-        const { data: rosterRows, error: rosterError } = await supabase
-          .from('players')
-          .select(
-            'id, name, position, overall, shooting_2pt, shooting_3pt, defense, passing, rebounding, dribbling, speed, stamina, experience, forma, team_id'
-          )
-          .in('team_id', [matchData.home_team_id, matchData.away_team_id]);
-
-        if (rosterError || !rosterRows) {
-          setLoadError('No se pudieron cargar las plantillas.');
-          return;
-        }
-
-        const homePlayers = (rosterRows as RawPlayerRow[]).filter((p) => String(p.team_id) === String(matchData.home_team_id));
-        const awayPlayers = (rosterRows as RawPlayerRow[]).filter((p) => String(p.team_id) === String(matchData.away_team_id));
+        const preferredPlayerIdsByTeam = new Map<string, number[]>([
+          [
+            String(matchData.home_team_id),
+            collectRotationPlayerIds(matchData.home_tactics, home.rotations)
+          ],
+          [
+            String(matchData.away_team_id),
+            collectRotationPlayerIds(matchData.away_tactics, away.rotations)
+          ]
+        ]);
+        const { players: rosterRows } = await fetchSimulationRosters(
+          supabase,
+          [String(matchData.home_team_id), String(matchData.away_team_id)],
+          { preferredPlayerIdsByTeam }
+        );
+        const homePlayers = rosterRows.filter(
+          (player) => String(player.team_id) === String(matchData.home_team_id)
+        );
+        const awayPlayers = rosterRows.filter(
+          (player) => String(player.team_id) === String(matchData.away_team_id)
+        );
         setHomeRoster(homePlayers.map(toEnginePlayer));
         setAwayRoster(awayPlayers.map(toEnginePlayer));
 

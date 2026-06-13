@@ -25,6 +25,11 @@ import {
   hasMissingStandingsColumns,
   shouldFallbackFromFinalizeMatchRpc
 } from '@/lib/finalize-match-compat';
+import {
+  collectRotationPlayerIds,
+  fetchSimulationRosters,
+  type MatchRosterPlayerRow
+} from '@/lib/match-roster';
 
 type TeamId = string;
 type TeamSide = 'home' | 'away';
@@ -59,24 +64,6 @@ type TeamRow = {
   tactic_defense?: string | null;
 };
 
-type RawPlayerRow = {
-  id: number;
-  name: string;
-  position: string;
-  overall: number;
-  shooting_2pt?: number | null;
-  shooting_3pt?: number | null;
-  defense?: number | null;
-  passing?: number | null;
-  rebounding?: number | null;
-  dribbling?: number | null;
-  speed?: number | null;
-  stamina?: number | null;
-  experience?: number | null;
-  forma?: number | null;
-  team_id: TeamId;
-};
-
 type PlayerGameStat = {
   player_id: number;
   team_id: TeamId;
@@ -95,7 +82,7 @@ type FinalizeMatchRpcResponse = {
 };
 
 type FinalizeResult =
-  | { status: 'ok'; warning?: string | null }
+  | { status: 'ok'; warning?: string | null; usedLegacyFallback?: boolean }
   | { status: 'already_played'; warning?: string | null };
 
 export type ScheduledMatchesRunSummary = {
@@ -131,6 +118,8 @@ type PrepareSimulationResult =
   | { status: 'already_played'; match: MatchRow };
 
 const DEFAULT_SCHEDULED_MATCH_PREP_MINUTES = 15;
+const LEGACY_FINALIZE_WARNING =
+  'La RPC finalize_match_transaction no está alineada con el esquema; se usó cierre legacy.';
 const MATCH_SELECT_FIELDS =
   'id,jornada,fase,season_number,played,home_team_id,away_team_id,home_score,away_score,match_date,home_tactics,away_tactics,play_by_play,simulated_home_score,simulated_away_score,simulated_play_by_play,simulated_player_stats,simulation_ready_at';
 const LEGACY_MATCH_SELECT_FIELDS =
@@ -168,15 +157,6 @@ const hasMissingSimulationColumns = (error: unknown) => {
     message.includes('simulated_play_by_play') ||
     message.includes('simulated_player_stats') ||
     message.includes('simulation_ready_at')
-  );
-};
-
-const hasMissingFormaColumn = (error: unknown) => {
-  const message = toErrorText(error).toLowerCase();
-  return (
-    message.includes('column players.forma does not exist') ||
-    message.includes('column "forma" does not exist') ||
-    (message.includes('forma') && message.includes('does not exist'))
   );
 };
 
@@ -227,7 +207,7 @@ const compareMatchesByDate = (a: MatchRow, b: MatchRow) => {
   return a.id - b.id;
 };
 
-const toEnginePlayer = (player: RawPlayerRow): EnginePlayer => ({
+const toEnginePlayer = (player: MatchRosterPlayerRow): EnginePlayer => ({
   id: player.id,
   name: player.name,
   position: player.position,
@@ -319,49 +299,6 @@ const extractTeamGamePlan = (matchTactics: unknown, fallbackTeam?: TeamRow): Tea
     offenseStyle,
     defenseStyle
   };
-};
-
-const PLAYER_SELECT_FIELDS =
-  'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id';
-const LEGACY_PLAYER_SELECT_FIELDS =
-  'id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,team_id';
-
-const fetchRosterByTeamIds = async (
-  supabaseAdmin: SupabaseClient,
-  teamIds: string[]
-): Promise<{ players: RawPlayerRow[]; warnings: string[] }> => {
-  const uniqueTeamIds = [...new Set(teamIds.map((id) => String(id)).filter(Boolean))];
-  const allPlayers: RawPlayerRow[] = [];
-  const warnings: string[] = [];
-  let selectFields = PLAYER_SELECT_FIELDS;
-
-  for (const batch of chunkArray(uniqueTeamIds, 5)) {
-    const { data, error } = await supabaseAdmin
-      .from('players')
-      .select(selectFields)
-      .in('team_id', batch);
-
-    if (error) {
-      if (hasMissingFormaColumn(error) && selectFields === PLAYER_SELECT_FIELDS) {
-        warnings.push('Schema legacy en players: columna forma no encontrada, se simula sin forma.');
-        selectFields = LEGACY_PLAYER_SELECT_FIELDS;
-        const { data: retryData, error: retryError } = await supabaseAdmin
-          .from('players')
-          .select(selectFields)
-          .in('team_id', batch);
-        if (retryError) {
-          throw new Error(`No se pudieron cargar plantillas: ${toErrorText(retryError)}`);
-        }
-        allPlayers.push(...((retryData as unknown as RawPlayerRow[] | null | undefined) || []));
-        continue;
-      }
-      throw new Error(`No se pudieron cargar plantillas: ${toErrorText(error)}`);
-    }
-
-    allPlayers.push(...((data as unknown as RawPlayerRow[] | null | undefined) || []));
-  }
-
-  return { players: allPlayers, warnings };
 };
 
 const normalizeName = (name: string) => name.trim().toLowerCase();
@@ -745,6 +682,35 @@ const applyRegularSeasonStandings = async (
   }
 };
 
+const runPostMatchUpdates = async (
+  supabaseAdmin: SupabaseClient,
+  events: MatchEvent[],
+  statsRows: PlayerGameStat[]
+) => {
+  const [experienceResult, formaResult, injuryResult] = await Promise.allSettled([
+    applyMatchExperienceProgression(supabaseAdmin, events, statsRows),
+    applyMatchFormaUpdate(supabaseAdmin, statsRows),
+    applyMatchInjuries(supabaseAdmin, statsRows)
+  ]);
+  const warnings: string[] = [];
+
+  if (experienceResult.status === 'rejected') {
+    warnings.push(toErrorText(experienceResult.reason));
+  }
+  if (formaResult.status === 'rejected') {
+    warnings.push(toErrorText(formaResult.reason));
+  } else if (formaResult.value) {
+    warnings.push(formaResult.value);
+  }
+  if (injuryResult.status === 'rejected') {
+    warnings.push(toErrorText(injuryResult.reason));
+  } else if (injuryResult.value && !injuryResult.value.startsWith('🚑')) {
+    warnings.push(injuryResult.value);
+  }
+
+  return warnings.join(' ').trim() || null;
+};
+
 const finalizeMatchPersistence = async (
   supabaseAdmin: SupabaseClient,
   match: MatchRow,
@@ -787,25 +753,18 @@ const finalizeMatchPersistence = async (
     }
 
     const statsSave = await persistPlayerStats(supabaseAdmin, match.id, statsRows);
-    if (!statsSave.ok) {
-      console.warn(`player_stats no guardadas para match ${match.id}: ${statsSave.error}`);
-    }
 
     await applyRegularSeasonStandings(supabaseAdmin, match, finalHome, finalAway);
-    let warning = 'RPC no disponible o incompatible con el esquema actual; se usó cierre legacy.';
+    const postMatchWarning = await runPostMatchUpdates(supabaseAdmin, events, statsRows);
+    const statsWarning = statsSave.ok
+      ? null
+      : `Stats de jugadores no guardadas: ${statsSave.error}`;
 
-    try {
-      const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
-        applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
-        applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText),
-        applyMatchInjuries(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
-      ]);
-      warning = [warning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim();
-    } catch (postError) {
-      warning = `${warning} ${toErrorText(postError)}`.trim();
-    }
-
-    return { status: 'ok', warning };
+    return {
+      status: 'ok',
+      warning: [statsWarning, postMatchWarning].filter(Boolean).join(' ').trim() || null,
+      usedLegacyFallback: true
+    };
   }
 
   const rpcPayload = isRecord(rpcData) ? (rpcData as FinalizeMatchRpcResponse) : {};
@@ -819,22 +778,11 @@ const finalizeMatchPersistence = async (
     throw new Error(`Respuesta inesperada al cerrar partido: ${status}`);
   }
 
-  try {
-    const [progressionWarning, formaWarning, injuryWarning] = await Promise.all([
-      applyMatchExperienceProgression(supabaseAdmin, events, statsRows).catch(toErrorText),
-      applyMatchFormaUpdate(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText),
-      applyMatchInjuries(supabaseAdmin, match.home_team_id, match.away_team_id, statsRows).catch(toErrorText)
-    ]);
-    return {
-      status: 'ok',
-      warning: [warning, progressionWarning, formaWarning, injuryWarning].filter(Boolean).join(' ').trim() || null
-    };
-  } catch (postError) {
-    return {
-      status: 'ok',
-      warning: [warning, toErrorText(postError)].filter(Boolean).join(' ').trim() || null
-    };
-  }
+  const postMatchWarning = await runPostMatchUpdates(supabaseAdmin, events, statsRows);
+  return {
+    status: 'ok',
+    warning: [warning, postMatchWarning].filter(Boolean).join(' ').trim() || null
+  };
 };
 
 const prepareMatchSimulation = async (
@@ -1152,7 +1100,7 @@ export const runScheduledMatches = async (
 
   if (!supportsPreparedSimulationColumns) {
     summary.warnings.push(
-      'Schema legacy detectado en matches: faltan columnas simulated_*. Se omite el precálculo persistido y se cierran directamente los partidos vencidos.'
+      'Schema legacy detectado en matches: faltan columnas simulated_*. Aplica db/migrations/20260613_align_match_simulator_schema.sql; mientras tanto se cierran directamente los partidos vencidos.'
     );
   }
 
@@ -1177,9 +1125,33 @@ export const runScheduledMatches = async (
     allTeamsData.push(...((batchData || []) as TeamRow[]));
   }
 
-  const { players: rosterData, warnings: rosterWarnings } = await fetchRosterByTeamIds(supabaseAdmin, teamIds);
-  rosterWarnings.forEach((w) => summary.warnings.push(w));
   const teamsById = new Map<string, TeamRow>(allTeamsData.map((team) => [String(team.id), team]));
+  const preferredPlayerIdsByTeam = new Map<string, number[]>();
+  candidateMatches.forEach((match) => {
+    const homeId = String(match.home_team_id);
+    const awayId = String(match.away_team_id);
+    preferredPlayerIdsByTeam.set(
+      homeId,
+      [...new Set([
+        ...(preferredPlayerIdsByTeam.get(homeId) || []),
+        ...collectRotationPlayerIds(match.home_tactics, teamsById.get(homeId)?.rotations)
+      ])]
+    );
+    preferredPlayerIdsByTeam.set(
+      awayId,
+      [...new Set([
+        ...(preferredPlayerIdsByTeam.get(awayId) || []),
+        ...collectRotationPlayerIds(match.away_tactics, teamsById.get(awayId)?.rotations)
+      ])]
+    );
+  });
+
+  const { players: rosterData, warnings: rosterWarnings } = await fetchSimulationRosters(
+    supabaseAdmin,
+    teamIds,
+    { preferredPlayerIdsByTeam }
+  );
+  rosterWarnings.forEach((warning) => summary.warnings.push(warning));
   const playersByTeam = new Map<string, EnginePlayer[]>();
   rosterData.forEach((player) => {
     const teamId = String(player.team_id);
@@ -1386,6 +1358,14 @@ export const runScheduledMatches = async (
         summary.warnings.push(`match ${match.id}: ${toErrorText(progressionError)}`);
       }
 
+      if (
+        result.status === 'ok' &&
+        result.usedLegacyFallback &&
+        supportsPreparedSimulationColumns &&
+        !summary.warnings.includes(LEGACY_FINALIZE_WARNING)
+      ) {
+        summary.warnings.push(LEGACY_FINALIZE_WARNING);
+      }
       if (result.warning) summary.warnings.push(`match ${match.id}: ${result.warning}`);
     } catch (error) {
       summary.errors.push({ matchId: match.id, reason: toErrorText(error) });

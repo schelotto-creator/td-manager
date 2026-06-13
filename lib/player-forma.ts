@@ -54,16 +54,15 @@ const computePostMatchFormaDelta = (params: {
 
 export const applyMatchFormaUpdate = async (
   supabaseAdmin: SupabaseClient,
-  homeTeamId: string,
-  awayTeamId: string,
   statsRows: Array<{ player_id: number }>
 ): Promise<string | null> => {
   const playedIds = new Set(statsRows.map((r) => r.player_id));
+  if (playedIds.size === 0) return null;
 
   const { data: players, error } = await supabaseAdmin
     .from('players')
     .select('id, forma, stamina')
-    .in('team_id', [homeTeamId, awayTeamId]);
+    .in('id', [...playedIds]);
 
   if (error || !players || players.length === 0) return null;
 

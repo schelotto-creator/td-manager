@@ -4,10 +4,35 @@ import { generateMatchSimulation, type EnginePlayer, type TeamGamePlan } from '@
 import { fetchMatchSimulatorSettings } from '@/lib/match-simulator-config';
 import { fetchPositionOverallConfig } from '@/lib/position-overall-config';
 import { shouldFallbackFromFinalizeMatchRpc } from '@/lib/finalize-match-compat';
+import {
+  collectRotationPlayerIds,
+  fetchSimulationRosters,
+  type MatchRosterPlayerRow
+} from '@/lib/match-roster';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 300;
+
+type MatchRow = {
+  id: number;
+  home_team_id: string;
+  away_team_id: string;
+  home_tactics?: unknown;
+  away_tactics?: unknown;
+};
+
+type TeamRow = {
+  id: string;
+  nombre: string;
+  color_primario?: string | null;
+  rotations?: unknown;
+  tactic_offense?: string | null;
+  tactic_defense?: string | null;
+};
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null;
 
 const isAdmin = async (supabaseAdmin: ReturnType<typeof getSupabaseAdmin>, token: string) => {
   const { data: authData, error } = await supabaseAdmin.auth.getUser(token);
@@ -17,10 +42,10 @@ const isAdmin = async (supabaseAdmin: ReturnType<typeof getSupabaseAdmin>, token
     .select('is_admin')
     .eq('owner_id', authData.user.id)
     .maybeSingle();
-  return Boolean((manager as any)?.is_admin);
+  return Boolean((manager as { is_admin?: boolean } | null)?.is_admin);
 };
 
-const toEnginePlayer = (p: any): EnginePlayer => ({
+const toEnginePlayer = (p: MatchRosterPlayerRow): EnginePlayer => ({
   id: p.id,
   name: p.name,
   position: p.position,
@@ -52,12 +77,12 @@ const ensureRoster = (roster: EnginePlayer[]) => {
   return out;
 };
 
-const extractGamePlan = (tactics: unknown, team: any): TeamGamePlan => {
-  const src = (tactics && typeof tactics === 'object') ? tactics as any : {};
+const extractGamePlan = (tactics: unknown, team?: TeamRow): TeamGamePlan => {
+  const src = isRecord(tactics) ? tactics : {};
   return {
     rotations: src.rotations || (team?.rotations ? team.rotations : undefined),
-    offenseStyle: src.offense || team?.tactic_offense || undefined,
-    defenseStyle: src.defense || team?.tactic_defense || undefined,
+    offenseStyle: typeof src.offense === 'string' ? src.offense : team?.tactic_offense || undefined,
+    defenseStyle: typeof src.defense === 'string' ? src.defense : team?.tactic_defense || undefined,
   };
 };
 
@@ -92,7 +117,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true, result: 'nothing_due', finalized: 0, pending: 0 });
   }
 
-  const m = matchData as any;
+  const m = matchData as MatchRow;
 
   // Count remaining pending matches
   const { count: pending } = await supabaseAdmin
@@ -102,20 +127,15 @@ export async function POST(request: NextRequest) {
     .not('match_date', 'is', null)
     .lte('match_date', now.toISOString());
 
-  const [teamsRes, playersRes, settings, positionConfig] = await Promise.all([
+  const [teamsRes, settings, positionConfig] = await Promise.all([
     supabaseAdmin.from('clubes').select('id,nombre,color_primario,rotations,tactic_offense,tactic_defense').in('id', [m.home_team_id, m.away_team_id]),
-    supabaseAdmin.from('players').select('id,name,position,overall,shooting_2pt,shooting_3pt,defense,passing,rebounding,dribbling,speed,stamina,experience,forma,team_id').in('team_id', [m.home_team_id, m.away_team_id]),
     fetchMatchSimulatorSettings(supabaseAdmin),
     fetchPositionOverallConfig(supabaseAdmin),
   ]);
 
-  const teams = (teamsRes.data || []) as any[];
-  const players = (playersRes.data || []) as any[];
+  const teams = (teamsRes.data || []) as TeamRow[];
   if (teamsRes.error) {
     return NextResponse.json({ ok: false, error: teamsRes.error.message }, { status: 500 });
-  }
-  if (playersRes.error) {
-    return NextResponse.json({ ok: false, error: playersRes.error.message }, { status: 500 });
   }
   const homeTeam = teams.find((t) => String(t.id) === String(m.home_team_id));
   const awayTeam = teams.find((t) => String(t.id) === String(m.away_team_id));
@@ -124,8 +144,33 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: `Equipos no encontrados para match ${m.id}` }, { status: 400 });
   }
 
-  const homePlayers = players.filter((p: any) => String(p.team_id) === String(m.home_team_id)).map(toEnginePlayer);
-  const awayPlayers = players.filter((p: any) => String(p.team_id) === String(m.away_team_id)).map(toEnginePlayer);
+  const preferredPlayerIdsByTeam = new Map<string, number[]>([
+    [
+      String(m.home_team_id),
+      collectRotationPlayerIds(m.home_tactics, homeTeam.rotations)
+    ],
+    [
+      String(m.away_team_id),
+      collectRotationPlayerIds(m.away_tactics, awayTeam.rotations)
+    ]
+  ]);
+  let players: MatchRosterPlayerRow[];
+  try {
+    ({ players } = await fetchSimulationRosters(
+      supabaseAdmin,
+      [String(m.home_team_id), String(m.away_team_id)],
+      { preferredPlayerIdsByTeam }
+    ));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return NextResponse.json({ ok: false, error: message }, { status: 500 });
+  }
+  const homePlayers = players
+    .filter((player) => String(player.team_id) === String(m.home_team_id))
+    .map(toEnginePlayer);
+  const awayPlayers = players
+    .filter((player) => String(player.team_id) === String(m.away_team_id))
+    .map(toEnginePlayer);
 
   const simulation = generateMatchSimulation({
     homeRoster: ensureRoster(homePlayers),

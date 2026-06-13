@@ -2,6 +2,16 @@ import type { SupabaseClient } from '@supabase/supabase-js';
 import { insertActivity } from '@/lib/activity-feed';
 import { getInjuryChanceMultiplier, getInjuryDurationReduction } from '@/lib/manager-talents';
 
+type ClubOwnerRow = {
+  id: string;
+  owner_id: string | null;
+};
+
+type ManagerStaffRow = {
+  owner_id: string;
+  talento_staff?: number | null;
+};
+
 export const computeInjuryChance = (stamina: number): number => {
   let chance = 0.05;
   if (stamina < 30) chance += 0.25;
@@ -23,31 +33,44 @@ export const getInjuryDaysRemaining = (injuredUntil: string | null | undefined):
 
 export const applyMatchInjuries = async (
   supabaseAdmin: SupabaseClient,
-  homeTeamId: string,
-  awayTeamId: string,
   statsRows: Array<{ player_id: number }>
 ): Promise<string | null> => {
   const playedIds = new Set(statsRows.map((r) => r.player_id));
+  if (playedIds.size === 0) return null;
 
   const { data: players, error } = await supabaseAdmin
     .from('players')
     .select('id, name, stamina, injured_until, team_id')
-    .in('team_id', [homeTeamId, awayTeamId]);
+    .in('id', [...playedIds]);
 
   if (error || !players || players.length === 0) return null;
 
   // Fetch staff talent for both teams (2 queries)
+  const teamIds = [...new Set(
+    (players as Array<{ team_id: string | null }>).map((player) => player.team_id).filter(Boolean)
+  )] as string[];
   const { data: clubs } = await supabaseAdmin
     .from('clubes')
     .select('id, owner_id')
-    .in('id', [homeTeamId, awayTeamId]);
-  const ownerIds = ((clubs ?? []) as any[]).map((c) => c.owner_id).filter(Boolean);
+    .in('id', teamIds);
+  const clubRows = (clubs ?? []) as ClubOwnerRow[];
+  const ownerIds = clubRows
+    .map((club) => club.owner_id)
+    .filter((ownerId): ownerId is string => Boolean(ownerId));
   const { data: managers } = ownerIds.length > 0
     ? await supabaseAdmin.from('managers').select('owner_id, talento_staff').in('owner_id', ownerIds)
     : { data: [] };
-  const staffByOwner = new Map(((managers ?? []) as any[]).map((m) => [m.owner_id, Number(m.talento_staff ?? 0)]));
+  const staffByOwner = new Map(
+    ((managers ?? []) as ManagerStaffRow[]).map((manager) => [
+      manager.owner_id,
+      Number(manager.talento_staff ?? 0)
+    ])
+  );
   const staffByTeam = new Map(
-    ((clubs ?? []) as any[]).map((c) => [String(c.id), staffByOwner.get(c.owner_id) ?? 0])
+    clubRows.map((club) => [
+      String(club.id),
+      club.owner_id ? staffByOwner.get(club.owner_id) ?? 0 : 0
+    ])
   );
 
   const now = new Date();

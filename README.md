@@ -75,6 +75,7 @@ Aplica las migraciones de `db/migrations`, en especial:
 - `20260302_automation_scheduler.sql`
 - `20260314_prepare_scheduled_match_replays.sql`
 - `20260304_add_github_integration_config.sql`
+- `20260613_align_match_simulator_schema.sql`
 
 Esa migración añade:
 
