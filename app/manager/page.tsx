@@ -10,7 +10,7 @@ type EscudoForma = 'classic' | 'modern' | 'circle' | 'hexagon' | 'square';
 type TalentKey = 'talento_ojo' | 'talento_financiero' | 'talento_mentor' | 'talento_staff' | 'talento_idolo';
 
 type ManagerData = {
-  id: number;
+  id: string;
   owner_id: string;
   nombre: string;
   nivel?: number;
@@ -29,7 +29,7 @@ type ManagerData = {
 };
 
 type ClubData = {
-  id: number;
+  id: string;
   owner_id: string;
   nombre: string;
   color_primario: string;
@@ -376,6 +376,23 @@ export default function ManagerPage() {
     setTimeout(() => setMensaje({ tipo: '', texto: '' }), 4000);
   };
 
+  const updateProfile = async (payload: Record<string, unknown>) => {
+    const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+    if (sessionError || !sessionData.session?.access_token) {
+      throw new Error('Sesión no disponible.');
+    }
+    const response = await fetch('/api/manager/profile', {
+      method: 'PATCH',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${sessionData.session.access_token}`
+      },
+      body: JSON.stringify(payload)
+    });
+    const result = (await response.json().catch(() => null)) as { error?: string } | null;
+    if (!response.ok) throw new Error(result?.error || 'No se pudo actualizar el perfil.');
+  };
+
   const handleUpgradeTalent = async (talentKey: TalentKey) => {
     if (!manager || Number(manager.puntos_talento || 0) <= 0) return;
     const talent = TALENTS.find(t => t.key === talentKey);
@@ -422,20 +439,21 @@ export default function ManagerPage() {
       return;
     }
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) return;
-      await supabase.from('managers').update({ nombre: managerName }).eq('owner_id', user.id); 
-      await supabase.from('clubes').update({ 
-        nombre: teamName,
-        color_primario: club.color_primario,
-        color_secundario: club.color_secundario,
-        jersey_home: club.jersey_home,
-        jersey_away: club.jersey_away
-      }).eq('owner_id', user.id); 
+      await updateProfile({
+        managerName,
+        teamName,
+        primaryColor: club.color_primario,
+        secondaryColor: club.color_secundario,
+        jerseyHome: club.jersey_home,
+        jerseyAway: club.jersey_away,
+        badgeShape: club.escudo_forma || 'classic'
+      });
       showMsg('success', '¡Identidad visual actualizada!');
       setManager({...manager, nombre: managerName});
       setClub({ ...club, nombre: teamName });
-    } catch { showMsg('error', 'Error al guardar los ajustes.'); }
+    } catch (error) {
+      showMsg('error', error instanceof Error ? error.message : 'Error al guardar los ajustes.');
+    }
   };
 
   const actualizarPassword = async () => {
@@ -450,22 +468,36 @@ export default function ManagerPage() {
       setSubiendo(true);
       const file = e.target.files?.[0];
       if (!file) return;
-      const extension = file.name.split('.').pop() || 'png';
+      const allowedTypes: Record<string, string> = {
+        'image/png': 'png',
+        'image/jpeg': 'jpg',
+        'image/webp': 'webp'
+      };
+      const extension = allowedTypes[file.type];
+      if (!extension) throw new Error('Usa una imagen PNG, JPEG o WebP.');
+      if (file.size > 2 * 1024 * 1024) throw new Error('El logo no puede superar 2 MB.');
       const fileName = `${club.id}/${Date.now()}-${Math.random()}.${extension}`;
-      await supabase.storage.from('escudos').upload(fileName, file);
+      const { error: uploadError } = await supabase.storage.from('escudos').upload(fileName, file);
+      if (uploadError) throw uploadError;
       const { data: { publicUrl } } = supabase.storage.from('escudos').getPublicUrl(fileName);
-      await supabase.from('clubes').update({ escudo_url: publicUrl }).eq('id', club.id); 
+      await updateProfile({ badgeUrl: publicUrl });
       setClub({ ...club, escudo_url: publicUrl });
       showMsg('success', 'Logo actualizado.');
-    } catch { showMsg('error', 'Error al subir.'); }
+    } catch (error) {
+      showMsg('error', error instanceof Error ? error.message : 'Error al subir.');
+    }
     finally { setSubiendo(false); }
   };
 
   const handleRemoveLogo = async () => {
     if (!club) return;
-    await supabase.from('clubes').update({ escudo_url: null }).eq('id', club.id);
-    setClub({ ...club, escudo_url: null });
-    showMsg('success', 'Logo eliminado.');
+    try {
+      await updateProfile({ badgeUrl: null });
+      setClub({ ...club, escudo_url: null });
+      showMsg('success', 'Logo eliminado.');
+    } catch (error) {
+      showMsg('error', error instanceof Error ? error.message : 'No se pudo eliminar el logo.');
+    }
   };
 
   if (cargando) return <div className="p-20 text-center font-black text-cyan-500 animate-pulse uppercase tracking-widest">Cargando Perfil...</div>;
@@ -704,7 +736,7 @@ export default function ManagerPage() {
               <div className="flex gap-2 justify-center pt-2">
                  <label className="cursor-pointer bg-slate-800 hover:bg-slate-700 px-6 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-2 text-white">
                    <Upload size={14} /> {subiendo ? 'Subiendo...' : 'Cambiar Logo'}
-                   <input type="file" className="hidden" onChange={handleUploadLogo} disabled={subiendo} accept="image/*" />
+                   <input type="file" className="hidden" onChange={handleUploadLogo} disabled={subiendo} accept="image/png,image/jpeg,image/webp" />
                  </label>
                  {club?.escudo_url && <button onClick={handleRemoveLogo} className="bg-red-500/10 hover:bg-red-500/20 text-red-500 px-6 py-2 rounded-xl text-[10px] font-black uppercase transition-all flex items-center gap-2"><Trash2 size={14} /> Eliminar</button>}
               </div>

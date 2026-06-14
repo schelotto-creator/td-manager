@@ -40,7 +40,7 @@ type Player = {
 };
 
 type Team = {
-  id: number;
+  id: string;
   nombre: string; 
   color_primario: string; 
   players: Player[];
@@ -274,46 +274,38 @@ function TacticsBoardContent() {
   const saveAll = async () => {
     if (!team) return;
     setLoading(true);
-    const tacticsPayload = { offense, defense, rotations: team.rotations };
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session?.access_token) {
+        throw new Error('Sesión no disponible.');
+      }
+      const response = await fetch('/api/tactics', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${sessionData.session.access_token}`
+        },
+        body: JSON.stringify({
+          matchId: matchId ? Number(matchId) : null,
+          offense,
+          defense,
+          rotations: team.rotations
+        })
+      });
+      const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+      if (!response.ok) throw new Error(payload?.error || 'No se pudo guardar la pizarra.');
 
-    if (matchId) {
-        const { data: match } = await supabase.from('matches').select('*').eq('id', matchId).single();
-        const isHome = match.home_team_id === team.id;
-        const tacticsUpdate = isHome ? { home_tactics: tacticsPayload } : { away_tactics: tacticsPayload };
-        // Also invalidate any pre-computed simulation so the next pulse re-runs with the new lineup
-        const resetSimulation = !match.played ? {
-          simulated_home_score: null,
-          simulated_away_score: null,
-          simulated_play_by_play: null,
-          simulated_player_stats: null,
-        } : {};
-        await supabase.from('matches').update({ ...tacticsUpdate, ...resetSimulation }).eq('id', matchId);
+      if (matchId) {
         alert(`✅ Plan guardado contra ${rivalName}.`);
         router.push('/calendar');
-    } else {
-        await supabase.from('clubes').update({
-            tactic_offense: offense,
-            tactic_defense: defense,
-            rotations: team.rotations
-        }).eq('id', team.id);
-
-        // Invalidate pre-computed simulations for upcoming matches so they re-run with the updated default lineup
-        await supabase.from('matches').update({
-          simulated_home_score: null,
-          simulated_away_score: null,
-          simulated_play_by_play: null,
-          simulated_player_stats: null,
-        }).eq('played', false).or(`home_team_id.eq.${team.id},away_team_id.eq.${team.id}`);
-
-        if (team.rotations['q1']) {
-            await supabase.from('players').update({ lineup_pos: 'BENCH' }).eq('team_id', team.id);
-            for (const [pos, playerId] of Object.entries(team.rotations['q1'])) {
-                if (playerId) await supabase.from('players').update({ lineup_pos: pos }).eq('id', playerId as number);
-            }
-        }
+      } else {
         alert('✅ Pizarra Estándar actualizada.');
+      }
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'No se pudo guardar la pizarra.');
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   };
 
   const getOverallColor = (ovr: number) => {

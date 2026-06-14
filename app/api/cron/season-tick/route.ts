@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase-admin';
-import { runScheduledMatches } from '@/lib/scheduled-match-runner';
+import { runScheduledMatchesSafely } from '@/lib/simulator-runtime';
 import { getWeeklySalaryByOvr } from '@/lib/salary';
 import { fetchEconomyRules, getLeagueEconomy, calculateSponsorshipAndFansIncome } from '@/lib/economy-balance';
 import { runWeeklyMaintenanceFallback } from '@/lib/weekly-maintenance-fallback';
@@ -232,8 +232,8 @@ const runTick = async (request: NextRequest) => {
 
   // Match simulation and market close always run regardless of maintenance outcome.
   try {
-    const [scheduledMatches, marketClose] = await Promise.all([
-      runScheduledMatches(supabaseAdmin, { now, maxMatches }),
+    const [simulatorRun, marketClose] = await Promise.all([
+      runScheduledMatchesSafely(supabaseAdmin, { now, maxMatches }),
       closeExpiredAuctions(supabaseAdmin).catch((err) => ({ closed: 0, errors: [toErrorText(err)] }))
     ]);
 
@@ -245,7 +245,11 @@ const runTick = async (request: NextRequest) => {
       ok: true,
       timestamp: now.toISOString(),
       weeklyMaintenance,
-      scheduledMatches,
+      simulatorRun: {
+        status: simulatorRun.status,
+        runId: simulatorRun.runId
+      },
+      scheduledMatches: simulatorRun.summary,
       marketClose,
       warnings
     });

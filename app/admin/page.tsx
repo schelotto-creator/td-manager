@@ -86,6 +86,40 @@ type AdminEconomyRule = {
 
 type AdminSection = 'users' | 'operations' | 'training';
 
+type SimulatorHealth = {
+  status: 'healthy' | 'warning' | 'critical' | 'running';
+  checked_at: string;
+  due: number;
+  prepared_due: number;
+  due_unprepared: number;
+  future_unprepared: number;
+  played_missing_replay: number;
+  pending_without_date: number;
+  oldest_due?: { id: number; match_date: string } | null;
+  latest_played?: { id: number; match_date: string } | null;
+  next_unplayed?: { id: number; match_date: string } | null;
+  runtime?: {
+    status: 'idle' | 'running' | 'ok' | 'error';
+    started_at?: string | null;
+    finished_at?: string | null;
+    last_success_at?: string | null;
+    last_error?: string | null;
+  } | null;
+};
+
+const formatSimulatorDate = (value?: string | null) => {
+  if (!value) return 'Sin registro';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return 'Sin registro';
+  return new Intl.DateTimeFormat('es-ES', {
+    day: '2-digit',
+    month: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    timeZone: 'Europe/Madrid'
+  }).format(parsed);
+};
+
 const LEAGUE_LEVEL_LABELS: Record<number, string> = {
   1: 'Bronce',
   2: 'Plata',
@@ -257,6 +291,8 @@ export default function AdminDashboard() {
   const [trainingConfig, setTrainingConfig] = useState<TrainingConfig>(DEFAULT_TRAINING_CONFIG);
   const [trainingConfigLoading, setTrainingConfigLoading] = useState(false);
   const [trainingConfigSaving, setTrainingConfigSaving] = useState(false);
+  const [simulatorHealth, setSimulatorHealth] = useState<SimulatorHealth | null>(null);
+  const [simulatorHealthLoading, setSimulatorHealthLoading] = useState(false);
 
   useEffect(() => {
     const verifyAdmin = async () => {
@@ -274,6 +310,7 @@ export default function AdminDashboard() {
             loadPositionOverallConfig();
             loadGitHubConfig();
             loadTrainingConfig();
+            loadSimulatorHealth();
         } else {
             router.push('/');
         }
@@ -356,6 +393,30 @@ export default function AdminDashboard() {
     const { count: teamsCount } = await supabase.from('clubes').select('*', { count: 'exact', head: true });
     
     setStats({ players: playersCount || 0, freeAgents: freeAgentsCount || 0, teams: teamsCount || 0 });
+  };
+
+  const loadSimulatorHealth = async () => {
+    setSimulatorHealthLoading(true);
+    try {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      const token = sessionData.session?.access_token;
+      if (sessionError || !token) throw new Error('Sin sesión activa');
+      const response = await fetch('/api/admin/simulator-health', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        health?: SimulatorHealth;
+      } | null;
+      if (!response.ok || !payload?.health) {
+        throw new Error(payload?.error || 'No se pudo cargar la salud del simulador.');
+      }
+      setSimulatorHealth(payload.health);
+    } catch (error) {
+      addLog(`❌ Salud del simulador: ${error instanceof Error ? error.message : 'error desconocido'}`);
+    } finally {
+      setSimulatorHealthLoading(false);
+    }
   };
 
   const loadPendingDraftClubs = async () => {
@@ -770,7 +831,7 @@ export default function AdminDashboard() {
       }
   };
 
-  const deleteUserData = async (managerId: number, clubId: any, managerName: string, authOwnerId: string) => {
+  const deleteUserData = async (managerName: string, authOwnerId: string) => {
       if (!confirm(`⚠️ ANIQUILACIÓN TOTAL ⚠️\nVas a borrar por completo la cuenta de ${managerName} y resetear su equipo a BOT.\n¿Estás absolutamente seguro?`)) return;
       
       setLoading(true);
@@ -778,31 +839,22 @@ export default function AdminDashboard() {
 
       try {
           if (!authOwnerId) throw new Error("Falta el ID de registro del usuario.");
-
-          const { data: userClubs } = await supabase.from('clubes').select('id').eq('owner_id', authOwnerId);
-          
-          if (userClubs && userClubs.length > 0) {
-              for (const club of userClubs) {
-                  await supabase.from('players').update({ team_id: null }).eq('team_id', club.id);
-                  const randomSuffix = Math.floor(Math.random() * 9999);
-                  await supabase.from('clubes').update({
-                      owner_id: null,
-                      is_bot: true,
-                      nombre: `Bot Team ${randomSuffix}`,
-                      presupuesto: 500000,
-                      color_primario: '#64748b',
-                      escudo_forma: 'classic'
-                  }).eq('id', club.id);
-              }
-              addLog(`🤖 Equipo(s) purgado(s) y convertido(s) en Bot.`);
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+          if (sessionError || !sessionData.session?.access_token) {
+            throw new Error('Sesión de administrador no disponible.');
           }
-
-          const { error: errManager } = await supabase.from('managers').delete().eq('owner_id', authOwnerId);
-          if (errManager) throw new Error("Fallo al borrar perfiles de mánager.");
+          const response = await fetch('/api/admin/users/delete', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${sessionData.session.access_token}`
+            },
+            body: JSON.stringify({ ownerId: authOwnerId })
+          });
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          if (!response.ok) throw new Error(payload?.error || 'Fallo al borrar la cuenta.');
           
-          const { error: errAuth } = await supabase.rpc('delete_auth_user', { target_uid: authOwnerId });
-          if (errAuth) throw new Error("Fallo al borrar la cuenta en Auth.");
-          
+          addLog(`🤖 Equipo(s) purgado(s) y convertido(s) en Bot.`);
           addLog(`💀 Cuenta de registro (Auth) aniquilada.`);
           addLog(`🗑️ Usuario ${managerName} borrado permanentemente.`);
           
@@ -1169,7 +1221,10 @@ export default function AdminDashboard() {
         addLog(`Temporada detectada: ${activeSeasonNumber}. Nuevo calendario: temporada ${nextSeasonNumber}.`);
 
         // 1. Conservamos partidos históricos y reseteamos solo la clasificación viva.
-        const { error: resetError } = await supabase.from('clubes').update({ pj: 0, v: 0, d: 0, pts: 0 }).neq('id', 0);
+        const { error: resetError } = await supabase
+          .from('clubes')
+          .update({ pj: 0, v: 0, d: 0, pts: 0 })
+          .not('id', 'is', null);
         if (resetError) {
           const msg = resetError.message?.toLowerCase() ?? '';
           const isMissingCols = ['pj', 'v', 'd', 'pts'].some(col => msg.includes(`column clubes.${col}`) || (msg.includes('clubes') && msg.includes(`'${col}' column`)));
@@ -1276,16 +1331,24 @@ export default function AdminDashboard() {
       const res = await fetch('/api/automation/pulse', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-        body: JSON.stringify({ maxMatches: 5 })
+        body: JSON.stringify({ maxMatches: 40 })
       });
       const text = await res.text();
-      let data: { error?: string; scheduledMatches?: Record<string, unknown> };
+      let data: {
+        error?: string;
+        simulatorRun?: { status?: string };
+        scheduledMatches?: Record<string, unknown> | null;
+      };
       try {
         data = JSON.parse(text);
       } catch {
         throw new Error(`HTTP ${res.status}: ${text.slice(0, 300)}`);
       }
       if (!res.ok) throw new Error(data.error || 'Error desconocido');
+      if (data.simulatorRun?.status === 'busy') {
+        addLog('⚠️ Ya hay otra ejecución del simulador en curso.');
+        return;
+      }
       const s = data.scheduledMatches as any;
       addLog(`✅ Pulso completado: ${s.finalized} finalizados, ${s.simulated} simulados, ${s.skipped} omitidos`);
       if (s.warnings?.length > 0) addLog(`⚠️ Avisos (${s.warnings.length}): ${(s.warnings as string[]).join(' | ')}`);
@@ -1294,6 +1357,7 @@ export default function AdminDashboard() {
       addLog(`❌ ERROR: ${err.message}`);
     } finally {
       setIsGenerating(false);
+      await loadSimulatorHealth();
     }
   };
 
@@ -1323,10 +1387,13 @@ export default function AdminDashboard() {
         let data: {
           error?: string;
           result?: string;
-          finalized?: number;
-          matchId?: number;
-          score?: string;
-          pending?: number;
+          scheduledMatches?: {
+            totalDueWithoutLimit?: number;
+            finalized?: number;
+            alreadyPlayed?: number;
+            simulated?: number;
+            errors?: Array<{ reason?: string }>;
+          } | null;
         };
         try {
           data = JSON.parse(text);
@@ -1338,17 +1405,28 @@ export default function AdminDashboard() {
           addLog(`❌ Ronda ${rounds}: ${data.error || `HTTP ${res.status}`}`);
           break;
         }
-        if (data.result === 'nothing_due') {
+        if (data.result === 'busy') {
+          addLog(`⚠️ Ronda ${rounds}: otra ejecución ya está en curso.`);
+          break;
+        }
+        const summary = data.scheduledMatches;
+        if (!summary || Number(summary.totalDueWithoutLimit || 0) === 0) {
           addLog(`✅ Bucle finalizado: ${total} partidos simulados en ${rounds} rondas. No quedan partidos pendientes.`);
           break;
         }
-        const pending = data.pending ?? null;
-        if (data.result === 'already_played') {
-          addLog(`↪ Ronda ${rounds}: match ${data.matchId} ya estaba cerrado${pending != null ? ` — pendientes: ${pending}` : ''}`);
-          continue;
+        const finalized = Number(summary.finalized || 0);
+        const pending = Math.max(
+          0,
+          Number(summary.totalDueWithoutLimit || 0) -
+            finalized -
+            Number(summary.alreadyPlayed || 0)
+        );
+        total += finalized;
+        addLog(`✔ Ronda ${rounds}: ${finalized} finalizados — total ${total} — pendientes: ${pending}`);
+        if (summary.errors?.length) {
+          addLog(`⚠️ Ronda ${rounds}: ${summary.errors.map((item) => item.reason).filter(Boolean).join(' | ')}`);
         }
-        total += data.finalized ?? 0;
-        addLog(`✔ Ronda ${rounds}: match ${data.matchId} (${data.score}) — total ${total}${pending != null ? ` — pendientes: ${pending}` : ''}`);
+        if (pending === 0) break;
       } catch (err: any) {
         addLog(`❌ Error en ronda ${rounds}: ${err.message}`);
         break;
@@ -1357,6 +1435,7 @@ export default function AdminDashboard() {
     if (rounds >= MAX_ROUNDS) addLog(`⚠️ Límite de ${MAX_ROUNDS} rondas alcanzado.`);
     if (stopBulkRef.current) addLog('🛑 Simulación en bucle detenida por el usuario.');
     setIsBulkSimulating(false);
+    await loadSimulatorHealth();
   };
 
   const parchearTodoEnBucle = async () => {
@@ -1598,7 +1677,7 @@ export default function AdminDashboard() {
                           </button>
 
                           <button
-                            onClick={() => deleteUserData(u.manager.id, u.club?.id, u.manager.nombre, u.manager.owner_id)}
+                            onClick={() => deleteUserData(u.manager.nombre, u.manager.owner_id)}
                             className="p-2 bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all"
                             title="Aniquilación Total de Cuenta"
                           >
@@ -1621,6 +1700,73 @@ export default function AdminDashboard() {
       {activeSection === 'operations' && (
         <div className="max-w-7xl mx-auto grid grid-cols-1 xl:grid-cols-12 gap-8">
           <div className="xl:col-span-8 space-y-6">
+            <div className={`border rounded-3xl p-6 shadow-xl ${
+              simulatorHealth?.status === 'critical'
+                ? 'bg-red-500/10 border-red-500/40'
+                : simulatorHealth?.status === 'warning'
+                  ? 'bg-amber-500/10 border-amber-500/30'
+                  : simulatorHealth?.status === 'running'
+                    ? 'bg-cyan-500/10 border-cyan-500/30'
+                    : 'bg-emerald-500/10 border-emerald-500/25'
+            }`}>
+              <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 mb-5">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-xl bg-slate-950/70 flex items-center justify-center">
+                    {simulatorHealth?.status === 'critical' || simulatorHealth?.status === 'warning'
+                      ? <AlertTriangle size={20} className={simulatorHealth.status === 'critical' ? 'text-red-400' : 'text-amber-400'} />
+                      : <Activity size={20} className={simulatorHealth?.status === 'running' ? 'text-cyan-400 animate-pulse' : 'text-emerald-400'} />}
+                  </div>
+                  <div>
+                    <h2 className="font-black uppercase tracking-wide text-white">Salud del simulador</h2>
+                    <p className="text-[10px] uppercase tracking-widest text-slate-400">
+                      {simulatorHealth?.status === 'critical'
+                        ? 'Intervención necesaria'
+                        : simulatorHealth?.status === 'warning'
+                          ? 'Revisión recomendada'
+                          : simulatorHealth?.status === 'running'
+                            ? 'Ejecución en curso'
+                            : 'Operativo'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  onClick={loadSimulatorHealth}
+                  disabled={simulatorHealthLoading}
+                  className="px-3 py-2 bg-slate-950/70 border border-white/10 rounded-lg text-[10px] font-black uppercase tracking-widest text-slate-300 hover:text-white disabled:opacity-50 flex items-center gap-2"
+                >
+                  <RefreshCcw size={12} className={simulatorHealthLoading ? 'animate-spin' : ''} />
+                  Actualizar
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3">
+                  <span className="block text-2xl font-black text-white">{simulatorHealth?.due ?? '—'}</span>
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500">Vencidos</span>
+                </div>
+                <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3">
+                  <span className="block text-2xl font-black text-cyan-300">{simulatorHealth?.prepared_due ?? '—'}</span>
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500">Listos para cerrar</span>
+                </div>
+                <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3">
+                  <span className="block text-2xl font-black text-amber-300">{simulatorHealth?.due_unprepared ?? '—'}</span>
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500">Sin precálculo</span>
+                </div>
+                <div className="bg-slate-950/60 border border-white/5 rounded-xl p-3">
+                  <span className="block text-2xl font-black text-violet-300">{simulatorHealth?.played_missing_replay ?? '—'}</span>
+                  <span className="text-[9px] uppercase tracking-widest text-slate-500">Sin replay</span>
+                </div>
+              </div>
+
+              <div className="mt-4 flex flex-col md:flex-row md:items-center justify-between gap-3 text-[10px] uppercase tracking-widest text-slate-400">
+                <span>Último éxito: <strong className="text-white">{formatSimulatorDate(simulatorHealth?.runtime?.last_success_at)}</strong></span>
+                <span>Último partido: <strong className="text-white">{formatSimulatorDate(simulatorHealth?.latest_played?.match_date)}</strong></span>
+                {simulatorHealth?.runtime?.last_error && (
+                  <span className="normal-case tracking-normal text-red-300">{simulatorHealth.runtime.last_error}</span>
+                )}
+              </div>
+            </div>
+
             <div className={`border rounded-3xl p-6 shadow-xl ${pendingDraftClubs.length > 0 ? 'bg-amber-500/10 border-amber-500/30' : 'bg-slate-900 border-slate-700'}`}>
               <div className="flex items-center justify-between gap-3 mb-4">
                 <div className="flex items-center gap-3">

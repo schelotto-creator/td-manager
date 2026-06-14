@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { runScheduledMatches } from '@/lib/scheduled-match-runner';
+import { runScheduledMatchesSafely } from '@/lib/simulator-runtime';
 import { requireOwnedClub, toApiError } from '@/lib/server-auth';
 
 export const runtime = 'nodejs';
@@ -27,12 +27,16 @@ export async function POST(request: NextRequest) {
     const body = (await request.json().catch(() => null)) as { maxMatches?: unknown } | null;
     const maxMatches = Math.max(1, Math.min(40, parsePositiveInt(body?.maxMatches) || 20));
     const now = new Date();
-    const scheduledMatches = await runScheduledMatches(supabaseAdmin, { now, maxMatches });
+    const simulatorRun = await runScheduledMatchesSafely(supabaseAdmin, { now, maxMatches });
 
     return NextResponse.json({
       ok: true,
       timestamp: now.toISOString(),
-      scheduledMatches
+      simulatorRun: {
+        status: simulatorRun.status,
+        runId: simulatorRun.runId
+      },
+      scheduledMatches: simulatorRun.summary
     });
   } catch (error) {
     const apiError = toApiError(error);

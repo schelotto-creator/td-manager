@@ -2,8 +2,6 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { supabase } from '@/lib/supabase';
-import { getWeeklySalaryByOvr } from '@/lib/salary';
-import { rollAgeAndExperience } from '@/lib/player-generation';
 import { useRouter } from 'next/navigation';
 import {
   applyExperienceBonus,
@@ -28,47 +26,12 @@ import {
   ListOrdered,
   Trophy
 } from 'lucide-react';
-import { CLUB_STATUS, getSeasonDraftPoolTag } from '@/lib/season-draft';
+import { CLUB_STATUS } from '@/lib/season-draft';
 import { filterMatchesBySeason, getLatestSeasonNumber } from '@/lib/match-seasons';
 
 const FLAGS: Record<string, string> = {
   'USA': '🇺🇸', 'ESP': '🇪🇸', 'ARG': '🇦🇷', 'LTU': '🇱🇹', 
   'SVK': '🇸🇰', 'CHN': '🇨🇳', 'FRA': '🇫🇷', 'GER': '🇩🇪'
-};
-
-const NAMES_DB: Record<string, { first: string[], last: string[] }> = {
-  'USA': {
-    first: ["Jamal", "Marcus", "Luka", "Kevin", "LeBron", "Kobe", "Michael", "Stephen", "Giannis", "Nikola", "Jayson", "Zion", "Ja", "Trae", "De'Aaron", "Devin", "Anthony", "Damian", "Donovan", "Kyrie", "Jimmy", "Klay", "Paul", "Russell", "Bradley", "DeMar", "Zach", "LaVine", "Julius", "Joel", "Bam", "Deandre", "Rudy", "Clint", "Pascal", "Domantas", "Myles", "Jarrett", "Kristaps", "Vucevic", "Jonas", "Brook", "Ayton", "Mitchell", "Darius", "Shai", "Tyrese", "Dejounte", "LaMelo", "Cade", "Fred", "CJ", "Brandon", "Terry", "D'Angelo", "Malcolm", "John", "Chris", "Kyle", "Kemba", "Goran", "Mike", "Ricky", "Derrick", "Lonzo", "RJ", "Cole", "Tyler", "Jordan", "Collin", "Dennis", "Jalen", "Jaden", "Isaiah", "Evan", "Scottie", "Franz", "Paolo", "Chet", "Jabari", "Keegan", "Bennedict", "Shaedon", "Dyson", "Jeremy", "Victor", "Scoot", "Ausar", "Amen", "Keyonte", "Walker", "Taylor", "Gradey", "Bilal", "Cason", "Dereck", "Khris", "Andrew", "Mikal"],
-    last: ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Miller", "Davis", "Rodriguez", "Martinez", "Curry", "Durant", "Tatum", "Jokic", "Embiid", "Hernandez", "Lopez", "Gonzalez", "Wilson", "Anderson", "Thomas", "Taylor", "Moore", "Jackson", "Martin", "Lee", "Perez", "Thompson", "White", "Harris", "Sanchez", "Clark", "Ramirez", "Lewis", "Robinson", "Walker", "Young", "Allen", "King", "Wright", "Scott", "Torres", "Nguyen", "Hill", "Flores", "Green", "Adams", "Nelson", "Baker", "Hall", "Rivera", "Campbell", "Mitchell", "Carter", "Roberts", "Gomez", "Phillips", "Evans", "Turner", "Diaz", "Parker", "Cruz", "Edwards", "Collins", "Reyes", "Stewart", "Morris", "Morales", "Murphy", "Cook", "Rogers", "Gutierrez", "Ortiz", "Morgan", "Cooper", "Peterson", "Bailey", "Reed", "Kelly", "Howard", "Ramos", "Kim", "Cox", "Ward", "Richardson", "Watson", "Brooks", "Chavez", "Wood", "James", "Bennett", "Gray", "Mendoza", "Ruiz", "Hughes", "Price", "Alvarez", "Castillo", "Sanders", "Patel"]
-  },
-  'ESP': {
-    first: ["Pau", "Marc", "Ricky", "Juan Carlos", "Sergio", "Rudy", "Willy", "Juancho", "Alex", "Fernando", "Jorge", "Jose", "Alberto", "Carlos", "David", "Javier", "Daniel", "Pablo", "Alvaro", "Adrian", "Mario", "Diego", "Hugo", "Marcos", "Ivan", "Raul", "Ruben", "Victor", "Hector", "Aaron", "Aitor", "Oscar", "Roberto", "Samuel", "Iker", "Cristian", "Ismael", "Guillermo", "Nicolas", "Martin", "Lucas", "Mateo", "Leo", "Alejandro", "Enrique", "Ignacio", "Gonzalo", "Julio", "Andres", "Miguel", "Rafael", "Tomas", "Luis", "Antonio", "Francisco", "Manuel", "Pedro", "Jesus", "Angel", "Vicente", "Eduardo", "Joaquin", "Emilio", "Julian", "Gabriel", "Felipe", "Matias", "Bastian", "Bruno", "Thiago", "Gael", "Izan", "Rodrigo", "Alonso", "Cesar", "Felix", "Jon", "Unai", "Paco", "Brais", "Joan", "Pol", "Biel", "Jan", "Nil", "Oriol", "Xavi", "Aleix", "Arnau", "Gerard", "Albert", "Ferran", "Sergi", "Ricard", "Ramon", "Gorka", "Koke", "Asier", "Mikel"],
-    last: ["Gasol", "Navarro", "Rubio", "Llull", "Fernandez", "Hernangomez", "Abrines", "Reyes", "Calderon", "Garbajosa", "Rodriguez", "Garcia", "Martinez", "Lopez", "Sanchez", "Perez", "Gomez", "Martin", "Jimenez", "Ruiz", "Hernandez", "Diaz", "Moreno", "Alvarez", "Muñoz", "Romero", "Alonso", "Gutierrez", "Torres", "Dominguez", "Vazquez", "Ramos", "Gil", "Ramirez", "Serrano", "Blanco", "Suarez", "Molina", "Morales", "Ortega", "Delgado", "Castro", "Ortiz", "Marin", "Sanz", "Iglesias", "Nuñez", "Medina", "Garrido", "Cortes", "Castillo", "Santos", "Lozano", "Guerrero", "Cano", "Prieto", "Mendez", "Cruz", "Calvo", "Gallego", "Vidal", "Leon", "Marquez", "Herrera", "Peña", "Flores", "Cabrera", "Campos", "Vega", "Diez", "Fuentes", "Carrasco", "Caballero", "Nieto", "Aguilar", "Pascual", "Santana", "Herrero", "Lorenzo", "Montero", "Hidalgo", "Gimenez", "Ibañez", "Ferrer", "Duran", "Santiago", "Benitez", "Vargas", "Mora", "Arias", "Carmona", "Crespo", "Roman", "Pastor", "Soto", "Saez", "Velasco", "Soler"]
-  },
-  'ARG': {
-    first: ["Facundo", "Emanuel", "Luis", "Andres", "Leandro", "Pablo", "Fabricio", "Carlos", "Walter", "Nicolas", "Luca", "Gabriel", "Patricio", "Federico", "Matias", "Hernan", "Maximiliano", "Diego", "Franco", "Agustin", "Gaston", "Ignacio", "Tomas", "Julian", "Ezequiel", "Mariano", "Sebastian", "Lucas", "Santiago", "Joaquin", "Rodrigo", "Emiliano", "Luciano", "Martin", "Guillermo", "Alejandro", "Cristian", "Juan", "Marcelo", "Jorge", "Ruben", "Roberto", "Ricardo", "Eduardo", "Claudio", "Fernando", "Julio", "Oscar", "Victor", "Gustavo"],
-    last: ["Ginobili", "Scola", "Nocioni", "Campazzo", "Delfino", "Prigioni", "Oberto", "Laprovittola", "Vildoza", "Deck", "Brussino", "Garino", "Fierro", "Delia", "Caffaro", "Bolmaro", "Redivo", "Gallizzi", "Romano", "Vaulet", "Sanchez", "Gomez", "Perez", "Fernandez", "Rodriguez", "Gonzalez", "Garcia", "Martinez", "Lopez", "Romero", "Diaz", "Torres", "Alvarez", "Ruiz", "Ramirez", "Flores", "Benitez", "Acosta", "Medina", "Herrera", "Aguilar", "Rios", "Rojas", "Gimenez", "Peralta", "Castro", "Silva", "Quiroga", "Navarro"]
-  },
-  'LTU': {
-    first: ["Arvydas", "Domantas", "Sarunas", "Jonas", "Mindaugas", "Linas", "Mantas", "Rokas", "Tomas", "Ignas", "Lukas", "Paulius", "Arturas", "Donatas", "Edgaras", "Eimantas", "Gytis", "Martynas", "Tadas", "Vytautas", "Darius", "Gintaras", "Kestutis", "Vaidas", "Zydrunas", "Antanas", "Dainius", "Egidiijus", "Klaidas", "Rimas", "Simas", "Vidas", "Aidas", "Gvidas", "Ovidijus", "Rimantas", "Stepas", "Valdas", "Andrius", "Deividas", "Evaldas", "Gediminas", "Justas", "Karolis", "Laurynas", "Nerijus", "Osvaldas", "Ramunas", "Saulius", "Vilius"],
-    last: ["Sabonis", "Valanciunas", "Jasikevicius", "Macijauskas", "Kleiza", "Ilgauskas", "Motiejunas", "Jokubaitis", "Kuzminskas", "Seibutis", "Grigonis", "Gudaitis", "Ulanovas", "Kalnietis", "Brazdeikis", "Kavaliauskas", "Giedraitis", "Dimsa", "Butkevicius", "Masiulis", "Echodas", "Sirvydis", "Tubelis", "Sedekerskis", "Kulboka", "Jankunas", "Maciulis", "Pocius", "Lavrinovic", "Songaila", "Kaukenas", "Kurtinaitis", "Siskauskas", "Stombergas", "Zukauskas", "Timinskas", "Einikis", "Karnisovas", "Praskevicius", "Marciulionis", "Chomicius", "Jovaisa", "Paulauskas", "Urbonas", "Petrauskas", "Kazlauskas", "Stankevicius", "Navickas", "Zilinskas"]
-  },
-  'SVK': {
-    first: ["Marek", "Martin", "Peter", "Juraj", "Tomas", "Milan", "Michal", "Jozef", "Lukas", "Andrej", "Jakub", "Matej", "Filip", "Patrik", "Samuel", "Jan", "Stefan", "Ivan", "Pavol", "Vladimir", "David", "Richard", "Radoslav", "Igor", "Robert", "Lubomir", "Marian", "Miroslav", "Anton", "Frantisek", "Dominik", "Simon", "Adam", "Daniel", "Oliver", "Kristian", "Branislav", "Julius", "Ondrej", "Zdeno", "Boris", "Rastislav", "Vojtech", "Eduard", "Kamil", "Jaroslav", "Gabriel", "Viliam", "Denis", "Alex"],
-    last: ["Vesely", "Hamsik", "Skriniar", "Lobotka", "Kucka", "Dubravka", "Pekarik", "Mak", "Weiss", "Duda", "Bozenik", "Hancko", "Vavro", "Suslov", "Hrosovsky", "Bero", "Schranz", "Gyomber", "Valjent", "Tomic", "Rusnak", "Kovár", "Ravas", "Sulla", "Gajanec", "Nemec", "Polak", "Kovac", "Balaz", "Varga", "Gallo", "Mraz", "Horvath", "Sykora", "Urban", "Gajdos", "Ondrus", "Farkas", "Kollar", "Sloboda", "Chovan", "Toth", "Sabo", "Krajcir", "Molnar", "Beno", "Halak", "Chara", "Gaborik", "Hossa"]
-  },
-  'CHN': {
-    first: ["Yao", "Jianlian", "Jeremy", "Yi", "Zhou", "Guo", "Wang", "Mengke", "Sun", "Ding", "Zhao", "Zhelin", "Abudushalamu", "Rui", "Hao", "Wei", "Lei", "Jian", "Peng", "Bin", "Bo", "Chao", "Chen", "Cheng", "Da", "Dong", "Fan", "Feng", "Gang", "Hai", "He", "Heng", "Hong", "Hui", "Jia", "Jie", "Jin", "Jing", "Jun", "Kai", "Kang", "Ke", "Kun", "Li", "Liang", "Lin", "Ling", "Long", "Lu", "Min"],
-    last: ["Ming", "Lin", "Qi", "Ailun", "Zhizhi", "Bateer", "Yue", "Yuhang", "Rui", "Hao", "Wang", "Li", "Zhang", "Liu", "Chen", "Yang", "Huang", "Zhao", "Wu", "Zhou", "Xu", "Sun", "Ma", "Zhu", "Hu", "Guo", "He", "Gao", "Luo", "Zheng", "Liang", "Xie", "Song", "Tang", "Han", "Feng", "Deng", "Cao", "Peng", "Zeng", "Xiao", "Tian", "Dong", "Yuan", "Pan", "Yu", "Jiang", "Cai"]
-  },
-  'FRA': {
-    first: ["Tony", "Rudy", "Nicolas", "Evan", "Victor", "Boris", "Nando", "Frank", "Guerschon", "Theo", "Kilian", "Sekou", "Elie", "Timothe", "Ousmane", "Tidjane", "Bilal", "Zaccharie", "Rayan", "Alexandre", "Leo", "Hugo", "Mathis", "Arthur", "Louis", "Jules", "Gabriel", "Enzo", "Maxime", "Antoine", "Clement", "Nathan", "Baptiste", "Gabin", "Tom", "Paul", "Pierre", "Jean", "Francois", "Jacques", "Michel", "Claude", "Philippe", "Alain", "Bernard", "Thierry", "Laurent", "Olivier", "Stephane", "Vincent"],
-    last: ["Parker", "Gobert", "Batum", "Fournier", "Wembanyama", "Diaw", "De Colo", "Ntilikina", "Yabusele", "Maledon", "Hayes", "Doumbouya", "Okobo", "Luwawu", "Dieng", "Salaun", "Coulibaly", "Risacher", "Rupert", "Sarr", "Martin", "Bernard", "Dubois", "Thomas", "Robert", "Richard", "Petit", "Durand", "Leroy", "Moreau", "Simon", "Laurent", "Lefevre", "Michel", "Garcia", "David", "Bertrand", "Roux", "Vincent", "Morel", "Girard", "Andre", "Mercier", "Dupont", "Lambert", "Bonnet", "Francois", "Martinez"]
-  },
-  'GER': {
-    first: ["Dirk", "Dennis", "Franz", "Moritz", "Maxi", "Daniel", "Johannes", "Isaac", "Paul", "Maodo", "Andreas", "Niels", "Christian", "Robin", "Philipp", "Lukas", "Leon", "Maximilian", "Felix", "Tim", "Jonas", "Julian", "Florian", "Alexander", "David", "Jan", "Simon", "Tobias", "Michael", "Thomas", "Markus", "Stefan", "Matthias", "Martin", "Sebastian", "Frank", "Jens", "Uwe", "Jorg", "Klaus", "Bernd", "Jurgen", "Ralf", "Dieter", "Wolfgang", "Peter", "Hans", "Karl"],
-    last: ["Nowitzki", "Schroder", "Wagner", "Kleber", "Theis", "Voigtmann", "Bonga", "Zipser", "Lo", "Hartenstein", "Obst", "Giffey", "Thiemann", "Bartzky", "Pleiss", "Muller", "Schmidt", "Schneider", "Fischer", "Weber", "Meyer", "Becker", "Schulz", "Hoffmann", "Schafer", "Koch", "Bauer", "Richter", "Klein", "Wolf", "Neumann", "Schwarz", "Zimmermann", "Braun", "Kruger", "Hofmann", "Hartmann", "Lange", "Schmitt", "Werner", "Krause", "Meier", "Lehmann", "Schmid", "Schulze", "Maier", "Kohler", "Herrmann"]
-  }
 };
 
 const POSITIONS = ['Base', 'Escolta', 'Alero', 'Ala-Pívot', 'Pívot'];
@@ -232,201 +195,58 @@ export default function DraftRoom() {
 
   const checkStatusAndGeneratePool = async () => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { router.push('/login'); return; }
-
-      const { data: myClub } = await supabase.from('clubes').select('*').eq('owner_id', user.id).single();
-      if (!myClub) {
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      if (sessionError || !sessionData.session?.access_token) {
+        router.push('/login');
+        return;
+      }
+      const [dynamicPositionConfig, response] = await Promise.all([
+        fetchPositionOverallConfig(supabase),
+        fetch('/api/draft/prepare', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${sessionData.session.access_token}`
+          }
+        })
+      ]);
+      const payload = (await response.json().catch(() => null)) as {
+        error?: string;
+        club?: any;
+        mode?: 'rookie' | 'season';
+        roster?: any[];
+        candidates?: any[];
+      } | null;
+      if (response.status === 409) {
         router.push('/');
         return;
       }
+      if (!response.ok || !payload?.club || !payload.mode) {
+        throw new Error(payload?.error || 'No se pudo preparar el draft.');
+      }
 
-      const dynamicPositionConfig = await fetchPositionOverallConfig(supabase);
       setPositionOverallConfig(dynamicPositionConfig);
+      setDraftMode(payload.mode);
+      setTeam(payload.club);
+      await buildDraftOrder(payload.club);
 
-      const isRookieDraft = myClub.status === CLUB_STATUS.ROOKIE_DRAFT;
-      const isSeasonDraft = myClub.status === CLUB_STATUS.SEASON_DRAFT;
-      if (!isRookieDraft && !isSeasonDraft) {
-        router.push('/');
-        return;
-      }
-
-      setDraftMode(isSeasonDraft ? 'season' : 'rookie');
-      setTeam(myClub);
-      await buildDraftOrder(myClub);
-
-      const countries = Object.keys(NAMES_DB);
-      let rosterToRender: any[] = [];
-      const { data: existingPlayers } = await supabase.from('players').select('*').eq('team_id', myClub.id);
-
-      // En onboarding generamos fondo de armario si el equipo está vacío.
-      if (isRookieDraft && (!existingPlayers || existingPlayers.length === 0)) {
-        const newPlayers = [];
-        const basePositions = ["Base", "Escolta", "Alero", "Ala-Pívot", "Pívot", "Base", "Alero", "Pívot"];
-
-        for (let i = 0; i < 8; i++) {
-          const randCountry = countries[Math.floor(Math.random() * countries.length)];
-          const fNames = NAMES_DB[randCountry].first;
-          const lNames = NAMES_DB[randCountry].last;
-          const fName = fNames[Math.floor(Math.random() * fNames.length)];
-          const lName = lNames[Math.floor(Math.random() * lNames.length)];
-
-          const pos = basePositions[i];
-          const isGuard = pos === 'Base' || pos === 'Escolta';
-          const baseStat = () => Math.floor(Math.random() * 20) + 40;
-          const { age, experience: exp } = rollAgeAndExperience(22, 33, 'rotation');
-
-          const p: any = {
-            name: `${fName} ${lName}`,
-            nationality: randCountry,
-            position: pos,
-            age,
-            height: isGuard ? Math.floor(Math.random() * 15) + 185 : Math.floor(Math.random() * 15) + 200,
-            shooting_3pt: baseStat(), shooting_2pt: baseStat(),
-            defense: baseStat(), passing: baseStat(),
-            rebounding: baseStat(), speed: baseStat(),
-            dribbling: baseStat(), stamina: 100,
-            experience: exp,
-            team_id: myClub.id,
-            lineup_pos: 'BENCH'
-          };
-
-          p.position = getBestRoleForPlayer(p, dynamicPositionConfig);
-          p.overall = calculateOverall(p, dynamicPositionConfig);
-          p.salary = getWeeklySalaryByOvr(p.overall);
-          newPlayers.push(p);
-        }
-
-        await supabase.from('players').insert(newPlayers);
-        rosterToRender = newPlayers;
-      } else {
-        rosterToRender = existingPlayers || [];
-      }
-
-      const rosterWithOverall = rosterToRender.map((p) => ({
+      const rosterWithOverall = (payload.roster || []).map((p) => ({
         ...p,
         position: getBestRoleForPlayer(p, dynamicPositionConfig),
         overall: calculateOverall(p, dynamicPositionConfig)
       }));
       setCurrentRoster(rosterWithOverall.sort((a, b) => (b.overall || 0) - (a.overall || 0)));
 
-      if (isSeasonDraft) {
-        const poolTag = getSeasonDraftPoolTag(myClub.id);
-        const { data: seasonPool } = await supabase
-          .from('players')
-          .select('*')
-          .is('team_id', null)
-          .eq('lineup_pos', poolTag);
-
-        // Si por cualquier motivo no existe pool, generamos un fallback mínimo.
-        if (!seasonPool || seasonPool.length === 0) {
-          const fallbackPool = POSITIONS.map((pos) => {
-            const randCountry = countries[Math.floor(Math.random() * countries.length)];
-            const fNames = NAMES_DB[randCountry].first;
-            const lNames = NAMES_DB[randCountry].last;
-            const { age, experience } = rollAgeAndExperience(18, 20, 'rookie');
-            const target = Math.floor(Math.random() * 9) + 62;
-            const stat = () => Math.max(45, Math.min(99, target + Math.floor(Math.random() * 12) - 6));
-            const isGuard = pos === 'Base' || pos === 'Escolta';
-            const attributes = {
-              shooting_3pt: stat(),
-              shooting_2pt: stat(),
-              defense: stat(),
-              rebounding: stat(),
-              passing: stat(),
-              speed: stat(),
-              dribbling: stat()
-            };
-            const safeExperience = Math.max(1, experience);
-            const bestPosition = getBestRoleForPlayer(
-              {
-                ...attributes
-              },
-              dynamicPositionConfig
-            );
-            const overall = calculateOverall(
-              {
-                position: bestPosition,
-                ...attributes,
-                experience: safeExperience
-              },
-              dynamicPositionConfig
-            );
-            return {
-              team_id: null,
-              lineup_pos: poolTag,
-              name: `${fNames[Math.floor(Math.random() * fNames.length)]} ${lNames[Math.floor(Math.random() * lNames.length)]}`,
-              nationality: randCountry,
-              position: bestPosition,
-              age,
-              height: isGuard ? Math.floor(Math.random() * 14) + 184 : Math.floor(Math.random() * 16) + 198,
-              ...attributes,
-              experience: safeExperience,
-              stamina: 100,
-              overall,
-              salary: getWeeklySalaryByOvr(overall)
-            };
-          });
-          await supabase.from('players').insert(fallbackPool);
-        }
-
-        const { data: refreshedSeasonPool } = await supabase
-          .from('players')
-          .select('*')
-          .is('team_id', null)
-          .eq('lineup_pos', poolTag);
-
-        const seasonCandidates = (refreshedSeasonPool || []).map((p: any) => ({
-          ...p,
-          position: getBestRoleForPlayer(p, dynamicPositionConfig),
-          overall: calculateOverall(p, dynamicPositionConfig),
-          temp_id: p.id,
-          db_id: p.id
-        }));
-
-        setRookies(seasonCandidates.sort((a, b) => (b.overall || 0) - (a.overall || 0)));
-      } else {
-        // Draft de expansión clásico (2 picks)
-        const generatedRookies = Array.from({ length: 10 }).map((_, i) => {
-          const randCountry = countries[Math.floor(Math.random() * countries.length)];
-          const fNames = NAMES_DB[randCountry].first;
-          const lNames = NAMES_DB[randCountry].last;
-
-          const fName = fNames[Math.floor(Math.random() * fNames.length)];
-          const lName = lNames[Math.floor(Math.random() * lNames.length)];
-
-          const pos = POSITIONS[Math.floor(Math.random() * POSITIONS.length)];
-          const isGuard = pos === 'Base' || pos === 'Escolta';
-          const { age, experience } = rollAgeAndExperience(18, 20, 'rookie');
-
-          const draftPlayer = {
-            temp_id: i,
-            db_id: null,
-            name: `${fName} ${lName}`,
-            nationality: randCountry,
-            position: pos,
-            age,
-            height: isGuard ? Math.floor(Math.random() * 15) + 185 : Math.floor(Math.random() * 15) + 200,
-            shooting_3pt: Math.floor(Math.random() * 20) + 55,
-            shooting_2pt: Math.floor(Math.random() * 20) + 55,
-            defense: Math.floor(Math.random() * 20) + 55,
-            rebounding: Math.floor(Math.random() * 20) + 55,
-            passing: Math.floor(Math.random() * 20) + 55,
-            speed: Math.floor(Math.random() * 20) + 55,
-            dribbling: Math.floor(Math.random() * 20) + 55,
-            experience,
-            stamina: 100,
-          };
-
-          return {
-            ...draftPlayer,
-            position: getBestRoleForPlayer(draftPlayer, dynamicPositionConfig),
-            overall: calculateOverall(draftPlayer, dynamicPositionConfig)
-          };
-        });
-
-        setRookies(generatedRookies.sort((a, b) => b.overall - a.overall));
-      }
+      const draftCandidates = (payload.candidates || []).map((p: any) => ({
+        ...p,
+        position: getBestRoleForPlayer(p, dynamicPositionConfig),
+        overall: calculateOverall(p, dynamicPositionConfig),
+        temp_id: p.id,
+        db_id: p.id
+      }));
+      setRookies(draftCandidates.sort((a, b) => (b.overall || 0) - (a.overall || 0)));
+    } catch (error) {
+      console.error(error);
+      alert(error instanceof Error ? error.message : 'No se pudo preparar el draft.');
     } finally {
       setLoading(false);
     }
@@ -445,35 +265,22 @@ export default function DraftRoom() {
       setSaving(true);
 
       try {
+          const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+          if (sessionError || !sessionData.session?.access_token) {
+            throw new Error('Sesión no disponible.');
+          }
+          const response = await fetch('/api/draft/confirm', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${sessionData.session.access_token}`
+            },
+            body: JSON.stringify({ selectedIds })
+          });
+          const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+          if (!response.ok) throw new Error(payload?.error || 'No se pudo cerrar el draft.');
+
           if (draftMode === 'season') {
-              const selected = rookies.find(r => selectedIds.includes(r.temp_id));
-              if (!selected?.db_id) throw new Error('No se encontró el pick seleccionado.');
-
-              const poolTag = getSeasonDraftPoolTag(team.id);
-              const { error: assignError } = await supabase
-                  .from('players')
-                  .update({
-                    team_id: team.id,
-                    lineup_pos: 'BENCH',
-                    position: selected.position,
-                    overall: selected.overall
-                  })
-                  .eq('id', selected.db_id)
-                  .is('team_id', null)
-                  .eq('lineup_pos', poolTag);
-
-              if (assignError) throw assignError;
-
-              const discardIds = rookies
-                .filter(r => r.db_id && r.db_id !== selected.db_id)
-                .map(r => r.db_id);
-
-              if (discardIds.length > 0) {
-                await supabase.from('players').delete().in('id', discardIds);
-              }
-
-              await supabase.from('clubes').update({ status: CLUB_STATUS.COMPETING }).eq('id', team.id);
-
               const { data: { user: currentUser } } = await supabase.auth.getUser();
               const [{ data: managerRow }, { count: remainingDraft }] = await Promise.all([
                 supabase.from('managers').select('is_admin').eq('owner_id', currentUser?.id ?? '').maybeSingle(),
@@ -483,19 +290,6 @@ export default function DraftRoom() {
                 router.push('/admin');
                 return;
               }
-          } else {
-              const chosenRookies = rookies.filter(r => selectedIds.includes(r.temp_id)).map(r => {
-                  const { temp_id, db_id, ...dbPlayer } = r;
-                  return {
-                      ...dbPlayer,
-                      team_id: team.id,
-                      lineup_pos: 'BENCH',
-                      salary: getWeeklySalaryByOvr(r.overall)
-                  };
-              });
-
-              await supabase.from('players').insert(chosenRookies);
-              await supabase.from('clubes').update({ status: CLUB_STATUS.COMPETING }).eq('id', team.id);
           }
 
           router.push('/');

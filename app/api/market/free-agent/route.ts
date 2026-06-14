@@ -6,7 +6,7 @@ import {
   fetchPositionOverallConfig
 } from '@/lib/position-overall-config';
 import { progressObjective } from '@/lib/season-objectives';
-import { isSeasonDraftPoolTag } from '@/lib/season-draft';
+import { isDraftPoolTag } from '@/lib/season-draft';
 import { requireOwnedClub, toApiError } from '@/lib/server-auth';
 
 export const runtime = 'nodejs';
@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
       fetchPositionOverallConfig(supabaseAdmin)
     ]);
 
-    if (playerError || !player || player.team_id || isSeasonDraftPoolTag(player.lineup_pos)) {
+    if (playerError || !player || player.team_id || isDraftPoolTag(player.lineup_pos)) {
       return NextResponse.json({ error: 'El jugador ya no está disponible' }, { status: 409 });
     }
 

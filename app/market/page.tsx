@@ -3,7 +3,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/lib/supabase';
 import { getWeeklySalaryByOvr } from '@/lib/salary';
-import { isSeasonDraftPoolTag } from '@/lib/season-draft';
+import { isDraftPoolTag } from '@/lib/season-draft';
 import {
   applyExperienceBonus,
   calculateWeightedOverallForBestRole,
@@ -140,7 +140,7 @@ export default function TransferMarket() {
       return;
     }
 
-    const visibleAgents = (players || []).filter((p) => !isSeasonDraftPoolTag(p.lineup_pos));
+    const visibleAgents = (players || []).filter((p) => !isDraftPoolTag(p.lineup_pos));
     if (visibleAgents.length > 0) {
       const processedAgents = visibleAgents.map(p => {
         const bestPosition = getBestRoleForPlayer(p, dynamicPositionConfig);
